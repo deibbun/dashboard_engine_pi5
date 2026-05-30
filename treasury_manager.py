@@ -72,22 +72,51 @@ class TreasuryManager:
         return False
         
     def execute_playbook(self, play_name):
-        """Re-deals the total capital based on target percentages."""
-        # The Playbook Weights
+        """Re-deals the total capital based on target percentages dynamically."""
+        # Static Legacy Playbooks
         plays = {
             "normal_split": {"btc_pure": 0.166, "master": 0.166, "eth_pure": 0.30, "sol_pure": 0.30},
             "sol_breakout": {"btc_pure": 0.05, "master": 0.15, "eth_pure": 0.15, "sol_pure": 0.60},
             "eth_run": {"btc_pure": 0.05, "master": 0.15, "eth_pure": 0.60, "sol_pure": 0.15},
-            "defensive": {"btc_pure": 0.05, "master": 0.05, "eth_pure": 0.05, "sol_pure": 0.05}
+            "defensive": {"master": 1.0} # Lock everything in the master reserve
         }
         
-        if play_name not in plays:
+        self._save_state()
+        weights = {}
+        
+        if play_name == "dynamic_equal":
+            # DYNAMIC PLAYBOOK: Ask the database what we are currently scanning
+            try:
+                conn = self.db_log._get_connection()
+                cur = conn.cursor()
+                cur.execute("SELECT ticker FROM monitored_pairs WHERE is_active = TRUE;")
+                active_pairs = cur.fetchall()
+                cur.close()
+                conn.close()
+                
+                count = len(active_pairs)
+                if count > 0:
+                    # Keep 10% in reserve, split the remaining 90% across active pairs
+                    weight_per_pair = 0.90 / count
+                    for row in active_pairs:
+                        # Convert "ADA/USD" -> "ada_pure"
+                        base_asset = row[0].split('/')[0].lower()
+                        weights[f"{base_asset}_pure"] = weight_per_pair
+                        
+                    weights["master"] = 0.10
+                else:
+                    weights = {"master": 1.0} # Defensive fallback
+            except Exception as e:
+                self.db_log.error("TREASURY", f"Failed to build dynamic playbook: {e}")
+                weights = {"master": 1.0}
+                
+        elif play_name in plays:
+            weights = plays[play_name]
+        else:
             return False
             
-        self._save_state()
-        
-        weights = plays[play_name]
         allocated_total = 0.0
+        self.allocations = {} # Clear old allocations
         
         # Mathematically distribute the capital
         for bot, weight in weights.items():

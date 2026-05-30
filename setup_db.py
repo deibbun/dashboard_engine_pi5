@@ -33,18 +33,23 @@ def bootstrap_database():
             VALUES (10009.58);
         """)
 
-        # 2. Live Positions Tracker (Primary Key is now symbol + strategy_id)
+        # 2. Live Positions Tracker (Upgraded for Tranches)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS positions (
                 symbol VARCHAR(20),
                 strategy_id VARCHAR(50),
                 environment VARCHAR(10) NOT NULL,
                 status VARCHAR(20) DEFAULT 'WAITING',
+                current_tranche INTEGER DEFAULT 0,
+                max_tranches INTEGER DEFAULT 3,
                 qty NUMERIC DEFAULT 0.0,
-                entry_price NUMERIC DEFAULT 0.0,
+                average_entry_price NUMERIC DEFAULT 0.0,
+                entry_price NUMERIC DEFAULT 0.0, -- First entry trigger
                 initial_margin_usd NUMERIC DEFAULT 0.0,
                 sl_price NUMERIC DEFAULT 0.0,
-                tp_price NUMERIC DEFAULT 0.0,
+                tp1_price NUMERIC DEFAULT 0.0,
+                tp2_price NUMERIC DEFAULT 0.0,
+                tp3_price NUMERIC DEFAULT 0.0,
                 last_updated TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (symbol, strategy_id, environment)
             );
@@ -141,6 +146,42 @@ def bootstrap_database():
                 total_capital NUMERIC(12, 2),
                 reserve NUMERIC(12, 2),
                 allocations JSONB
+            );
+        """)
+        
+        # --- NEW DYNAMIC SCANNER ARCHITECTURE ---
+
+        # 7. Monitored Pairs (The Oracle's Target List)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS monitored_pairs (
+                ticker VARCHAR(20) PRIMARY KEY,
+                kraken_symbol VARCHAR(20) NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                min_volume_24h NUMERIC DEFAULT 0.0
+            );
+        """)
+
+        # Insert our initial batch, including a new one (ADA) to prove it's dynamic
+        cur.execute("""
+            INSERT INTO monitored_pairs (ticker, kraken_symbol, is_active)
+            VALUES 
+                ('BTC/USD', 'XXBTZUSD', true),
+                ('ETH/USD', 'XETHZUSD', true),
+                ('SOL/USD', 'SOLUSD', true),
+                ('ADA/USD', 'ADAUSD', true)
+            ON CONFLICT (ticker) DO NOTHING;
+        """)
+
+        # 8. Dynamic Market Signals
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS market_signals (
+                id SERIAL PRIMARY KEY,
+                ticker VARCHAR(20) REFERENCES monitored_pairs(ticker),
+                playbook_name VARCHAR(50),
+                signal_type VARCHAR(10),
+                strength NUMERIC DEFAULT 0.0,
+                metrics JSONB,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
         """)
 

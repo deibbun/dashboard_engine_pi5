@@ -34,12 +34,13 @@
             <span id="balance-display" style="font-size: 1.2em; font-weight: bold; margin-right: 20px;">Balance: $0.00</span>
             
 			<select id="play-selector" onchange="changePlay()" style="background: #333; color: #fff; border: 1px solid #555; padding: 5px; border-radius: 3px; font-family: monospace; margin-right: 10px;">
-                <option value="" disabled selected>Select Treasury Play...</option>
-                <option value="normal_split">Normal Split (Balanced)</option>
-                <option value="sol_breakout">SOL Breakout (Heavy SOL)</option>
-                <option value="eth_run">ETH Run (Heavy ETH)</option>
-                <option value="defensive">Defensive (Lockdown)</option>
-            </select>
+				<option value="" disabled selected>Select Treasury Play...</option>
+				<option value="dynamic_equal">Auto-Balance (Equal Weight Active Pairs)</option>
+				<option value="normal_split">Normal Split (Balanced)</option>
+				<option value="sol_breakout">SOL Breakout (Heavy SOL)</option>
+				<option value="eth_run">ETH Run (Heavy ETH)</option>
+				<option value="defensive">Defensive (Lockdown)</option>
+			</select>
 			
             <button id="mode-toggle" onclick="toggleMode()">Loading Mode...</button>
             <button onclick="testConnection()">Test Connection</button>
@@ -54,17 +55,26 @@
             <h3>🌐 Market Oracle (V2)</h3>
             <div class="table-container">
                 <table id="market-table">
-                    <thead><tr><th>Symbol</th><th>Live Price</th><th>Closed Price</th><th>SMA</th><th>ATR %</th><th>Momentum</th><th>RSI</th><th>Hunting</th></tr></thead>
+                    <thead><tr><th>Symbol</th><th>Live Price</th><th>Closed Price</th><th>SMA</th><th>ATR %</th><th>Momentum</th><th>RSI</th><th>Action</th></tr></thead>
                     <tbody></tbody>
                 </table>
             </div>
         </div>
 
         <div class="panel">
-            <h3>📊 Live Positions</h3>
+            <h3>📊 Live Positions (Tranche State)</h3>
             <div class="table-container">
                 <table id="positions-table">
-                    <thead><tr><th>Strategy</th><th>Symbol</th><th>Status</th><th>Qty</th><th>Entry</th><th>TP</th><th>Action</th></tr></thead>
+                    <thead><tr>
+                        <th>Strategy</th>
+                        <th>Symbol</th>
+                        <th>Status (Tranche)</th>
+                        <th>Qty</th>
+                        <th>Avg Entry</th>
+                        <th>Stop Loss</th>
+                        <th>Next Target</th>
+                        <th>Action</th>
+                    </tr></thead>
                     <tbody></tbody>
                 </table>
             </div>
@@ -164,6 +174,28 @@
             }
             setTimeout(() => statusDiv.innerHTML = '', 5000);
         }
+		
+		async function forceEntry(symbol) {
+            if(confirm(`🚨 MANUAL OVERRIDE:\n\nForce Tranche 1 entry on ${symbol} at current market price?`)) {
+                try {
+                    const res = await fetch('/api/override/open', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ symbol: symbol })
+                    });
+                    const data = await res.json();
+                    if(data.status === 'success') {
+                        console.log("Entry Complete:", data);
+                        fetchData(); 
+                    } else {
+                        alert("Error: " + data.message);
+                    }
+                } catch (e) {
+                    console.error("Override failed", e);
+                    alert("Failed to reach the Executive Engine.");
+                }
+            }
+        }
 
         async function manualOverride(strategyId, symbol) {
             if(confirm(`🚨 EXECUTIVE OVERRIDE:\n\nAre you sure you want to instantly liquidate ${strategyId} on ${symbol} at current market price?`)) {
@@ -208,24 +240,17 @@
                     modeBtn.style.color = "#4CAF50";
                 }
 
-                // 3. Update the Data Tables
+                // Market Oracle Table (with FORCE BUY buttons)
                 document.querySelector('#market-table tbody').innerHTML = data.market.map(row => {
                     const p = parseFloat(row.price);
                     const s = parseFloat(row.sma);
                     const priceColor = p > s ? '#4CAF50' : '#f44336';
                     
                     const isMom = String(row.momentum_ignition).toLowerCase() === 'true';
-                    const isHunt = String(row.is_hunting).toLowerCase() === 'true';
-
-                    // --- NEW: ATR and RSI Color Math ---
                     const atr = parseFloat(row.atr_pct);
                     const rsi = parseFloat(row.rsi);
                     
-                    // Volatility threshold: > 0.7% is Green, else Red
                     const atrColor = atr >= 0.7 ? '#4CAF50' : '#f44336';
-                    
-                    // RSI threshold: > 50 is Green (Bullish), else Red (Bearish)
-                    // If you prefer < 30 to be green (Oversold), change the ">=" to "<="
                     const rsiColor = rsi >= 50 ? '#4CAF50' : '#f44336';
 
                     return `<tr>
@@ -236,31 +261,58 @@
                         <td style="color: ${atrColor}; font-weight: bold;">${row.atr_pct}%</td>
                         <td style="color: ${isMom ? '#4CAF50' : '#bbb'}">${row.momentum_ignition}</td>
                         <td style="color: ${rsiColor}; font-weight: bold;">${row.rsi}</td>
-                        <td style="color: ${isHunt ? '#4CAF50' : '#bbb'}">${row.is_hunting}</td>
+                        <td><button class="panic-btn" style="background: #2e7d32 !important; border: 1px solid #4CAF50 !important;" onclick="forceEntry('${row.symbol}')">FORCE BUY</button></td>
                     </tr>`;
                 }).join('');
 
-                document.querySelector('#positions-table tbody').innerHTML = data.positions.map(row => 
-                    `<tr><td>${row.strategy_id}</td><td>${row.symbol}</td>
-                    <td style="color: ${row.status === 'OPEN' ? '#4CAF50' : '#bbb'}">${row.status}</td>
-                    <td>${row.qty}</td><td>${row.entry_price}</td><td>${row.tp_price}</td>
-                    <td>${row.status === 'OPEN' ? `<button class="panic-btn" onclick="manualOverride('${row.strategy_id}', '${row.symbol}')">CLOSE</button>` : '-'}</td></tr>`
-                ).join('');
-				
-				document.querySelector('#positions-table tbody').innerHTML = data.positions.map(row => 
-                    `<tr><td>${row.strategy_id}</td><td>${row.symbol}</td>
-                    <td style="color: ${row.status === 'OPEN' ? '#4CAF50' : '#bbb'}">${row.status}</td>
-                    <td>${row.qty}</td><td>${row.entry_price}</td><td>${row.tp_price}</td>
-                    <td>${row.status === 'OPEN' ? `<button class="panic-btn" onclick="manualOverride('${row.strategy_id}', '${row.symbol}')">CLOSE</button>` : '-'}</td></tr>`
-                ).join('');
+                // --- UPGRADED: Positions Table with Tranche Logic ---
+                document.querySelector('#positions-table tbody').innerHTML = data.positions.map(row => {
+                    const isOpen = row.status === 'OPEN';
+                    const statusColor = isOpen ? '#4CAF50' : '#bbb';
+                    
+                    // Format Tranche Progress
+                    let statusText = row.status;
+                    if (isOpen && row.max_tranches > 0) {
+                        statusText = `OPEN (${row.current_tranche}/${row.max_tranches})`;
+                    }
+                    
+                    // Determine the active Next Target
+                    let nextTarget = '-';
+                    let targetLabel = '';
+                    if (isOpen) {
+                        if (parseFloat(row.tp1_price) > 0) {
+                            nextTarget = parseFloat(row.tp1_price).toFixed(2);
+                            targetLabel = 'TP1';
+                        } else if (parseFloat(row.tp2_price) > 0) {
+                            nextTarget = parseFloat(row.tp2_price).toFixed(2);
+                            targetLabel = 'TP2';
+                        } else if (parseFloat(row.tp3_price) > 0) {
+                            nextTarget = parseFloat(row.tp3_price).toFixed(2);
+                            targetLabel = 'TP3';
+                        }
+                    }
 
-                // --- NEW: Update Treasury Panel ---
+                    const avgEntry = isOpen ? parseFloat(row.average_entry_price).toFixed(2) : '-';
+                    const slPrice = isOpen ? parseFloat(row.sl_price).toFixed(2) : '-';
+                    const displayQty = isOpen ? parseFloat(row.qty).toFixed(4) : '-';
+
+                    return `<tr>
+                        <td style="font-weight:bold;">${row.strategy_id}</td>
+                        <td>${row.symbol}</td>
+                        <td style="color: ${statusColor}; font-weight: bold;">${statusText}</td>
+                        <td>${displayQty}</td>
+                        <td style="color: #e0e0e0;">${avgEntry}</td>
+                        <td style="color: #f44336;">${slPrice}</td>
+                        <td style="color: #4CAF50;">${nextTarget} <span style="font-size: 0.8em; color: #888;">${targetLabel}</span></td>
+                        <td>${isOpen ? `<button class="panic-btn" onclick="manualOverride('${row.strategy_id}', '${row.symbol}')">LIQUIDATE</button>` : '-'}</td>
+                    </tr>`;
+                }).join('');
+
+                // Treasury Panel
                 if (data.treasury) {
                     const total = parseFloat(data.treasury.total_capital);
                     const reserve = parseFloat(data.treasury.reserve);
-                    
-                    // Color code the ultimate safety switch light
-                    let lightColor = '#ff9800'; // Yellow
+                    let lightColor = '#ff9800';
                     if (data.treasury.reconciliation_light === 'GREEN') lightColor = '#4CAF50';
                     if (data.treasury.reconciliation_light === 'RED') lightColor = '#f44336';
 
@@ -269,13 +321,11 @@
                         <span style="color: #bbb;">Cash Reserve:</span> <span style="color: #4CAF50; font-weight: bold;">${formatUSD(reserve)}</span>
                     `;
 
-                    // Loop through the allocations dictionary to build the table
                     let treasuryHtml = '';
                     const allocs = data.treasury.allocations;
                     for (const [strat, amount] of Object.entries(allocs)) {
                         const amountFloat = parseFloat(amount);
                         const pct = total > 0 ? ((amountFloat / total) * 100).toFixed(1) : 0;
-                        
                         treasuryHtml += `<tr>
                             <td style="font-weight: bold; color: #e0e0e0;">${strat.toUpperCase()}</td>
                             <td style="color: #4CAF50;">${formatUSD(amountFloat)}</td>
@@ -284,8 +334,8 @@
                     }
                     document.querySelector('#treasury-table tbody').innerHTML = treasuryHtml;
                 }
-                // -----------------------------------
 
+                // Journals
                 document.querySelector('#journals-table tbody').innerHTML = data.journals.map(row => 
                     `<tr><td>${row.updated_time}</td><td>${row.strategy_id}</td>
                     <td style="color: ${row.log_level === 'WARNING' ? '#ff9800' : '#bbb'}">${row.log_level}</td>

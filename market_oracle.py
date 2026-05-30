@@ -2,25 +2,18 @@
 
 import os
 from dotenv import load_dotenv
-
-load_dotenv()
-
 import time
 import requests
 import psycopg2
+from psycopg2.extras import RealDictCursor
+import concurrent.futures
+
+load_dotenv()
 
 class KrakenOracle:
     def __init__(self, logger):
         self.logger = logger
         self.base_url = "https://api.kraken.com/0/public"
-        
-        # Kraken is notoriously weird about ticker symbols
-        # Have to translate the dashboard symbols into Kraken's language
-        self.symbol_map = {
-            'BTC/USD': 'XXBTZUSD',
-            'ETH/USD': 'XETHZUSD',
-            'SOL/USD': 'SOLUSD'
-        }
         
         self.db_params = {
             'dbname': os.getenv('DB_NAME'),
@@ -32,10 +25,23 @@ class KrakenOracle:
         
     def _get_db_connection(self):
         return psycopg2.connect(**self.db_params)
+
+    def fetch_active_pairs(self):
+        """Pulls the dynamic list of monitored pairs from the database."""
+        try:
+            conn = self._get_db_connection()
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("SELECT ticker, kraken_symbol FROM monitored_pairs WHERE is_active = TRUE;")
+            pairs = cur.fetchall()
+            cur.close()
+            conn.close()
+            return pairs
+        except Exception as e:
+            self.logger.error("ORACLE", f"Failed to fetch monitored pairs: {e}")
+            return []
             
-    def fetch_ohlc_data(self, standard_symbol, interval=60):
+    def fetch_ohlc_data(self, kraken_symbol, interval=60):
         """Pulls the latest hourly candlestick data from Kraken."""
-        kraken_symbol = self.symbol_map.get(standard_symbol)
         url = f"{self.base_url}/OHLC?pair={kraken_symbol}&interval={interval}"
             
         try:
@@ -43,16 +49,14 @@ class KrakenOracle:
             data = response.json()
                 
             if data['error']:
-                self.logger.error("ORACLE", f"Kraken API Error for {standard_symbol}: {data['error']}")
+                self.logger.error("ORACLE", f"Kraken API Error for {kraken_symbol}: {data['error']}")
                 return None
                 
-            # Kraken returns data nested under the pair name
-            # Format:  [time, open, high, low, close, vwap, volume, count]
             candles = data['result'][kraken_symbol]
             return candles
                 
         except Exception as e:
-            self.logger.error("ORACLE", f"Network failure fetching {standard_symbol}: {e}")
+            self.logger.error("ORACLE", f"Network failure fetching {kraken_symbol}: {e}")
             return None
                 
     def calculate_indicators(self, candles, period=14):
@@ -60,10 +64,7 @@ class KrakenOracle:
         if not candles or len(candles) < period + 2:
             return None, None, None, None, None, None
             
-        # 1. THE UI DATA: The absolute last candle in the list is currently breathing
         live_price = float(candles[-1][4])
-        
-        # 2. THE BRAIN DATA: We isolate the closed history (drop the live candle)
         closed_history = candles[-(period+2):-1]
         
         closes = [float(candle[4]) for candle in closed_history]
@@ -71,10 +72,7 @@ class KrakenOracle:
         lows = [float(candle[3]) for candle in closed_history]
         volumes = [float(candle[6]) for candle in closed_history]
         
-        # The last fully locked price
         closed_price = closes[-1]
-        
-        # SMA of the last 14 closed candles
         sma = sum(closes[1:]) / period
         
         # 1. ATR Percentage
@@ -112,47 +110,62 @@ class KrakenOracle:
         return live_price, closed_price, sma, round(atr_pct, 2), momentum_ignition, round(rsi, 2)
             
     def update_database(self, symbol, live_price, closed_price, sma, atr_pct, momentum, rsi):
-        """Pushes the data into the database using strictly locked candle logic."""
-        
-        # THE MASTER ENTRY LOGIC
-        # We compare the LOCKED closed_price against the SMA, completely ignoring the live flicker
+        """Pushes data into the DB using an UPSERT to support dynamic pairs."""
         is_hunting = (closed_price > sma) and momentum and (rsi < 70)
         
+        # UPSERT: Insert if new pair, otherwise update the existing row.
         sql = """
-            UPDATE live_market_data
-            SET price = %s, closed_price = %s, sma = %s, atr_pct = %s, momentum_ignition = %s, rsi = %s, is_hunting = %s, last_updated = CURRENT_TIMESTAMP
-            WHERE symbol = %s;
+            INSERT INTO live_market_data (symbol, price, closed_price, sma, atr_pct, momentum_ignition, rsi, is_hunting, last_updated)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (symbol) DO UPDATE 
+            SET price = EXCLUDED.price, 
+                closed_price = EXCLUDED.closed_price, 
+                sma = EXCLUDED.sma, 
+                atr_pct = EXCLUDED.atr_pct, 
+                momentum_ignition = EXCLUDED.momentum_ignition, 
+                rsi = EXCLUDED.rsi, 
+                is_hunting = EXCLUDED.is_hunting, 
+                last_updated = CURRENT_TIMESTAMP;
         """
         try:
             conn = self._get_db_connection()
             cur = conn.cursor()
-            # We save the live_price so your UI updates, but is_hunting is bulletproof
-            cur.execute(sql, (live_price, closed_price, sma, atr_pct, momentum, rsi, is_hunting, symbol))
+            cur.execute(sql, (symbol, live_price, closed_price, sma, atr_pct, momentum, rsi, is_hunting))
             conn.commit()
             cur.close()
             conn.close()
         except Exception as e:
             self.logger.error("ORACLE", f"Database update failed for {symbol}: {e}")
+
+    def process_pair(self, pair_data):
+        """Worker function for concurrent scanning."""
+        ticker = pair_data['ticker']
+        kraken_symbol = pair_data['kraken_symbol']
+        
+        candles = self.fetch_ohlc_data(kraken_symbol, interval=60)
+        if candles:
+            live_price, closed_price, sma, atr_pct, momentum, rsi = self.calculate_indicators(candles, period=14)
+            if live_price and sma:
+                self.update_database(ticker, live_price, closed_price, sma, atr_pct, momentum, rsi)
+                return f"{ticker} success"
+        return f"{ticker} failed"
                 
     def scan_markets(self):
-        """The main loop function that checks all tracked pairs."""
-        self.logger.info("ORACLE", "Initiating market scan...")
+        """Checks all tracked pairs concurrently."""
+        self.logger.info("ORACLE", "Initiating dynamic market scan...")
+        active_pairs = self.fetch_active_pairs()
         
-        for symbol in self.symbol_map.keys():
-            candles = self.fetch_ohlc_data(symbol, interval=60)
+        if not active_pairs:
+            self.logger.warning("ORACLE", "No active pairs found in monitored_pairs table.")
+            return
+
+        # Fire concurrent requests using a thread pool
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(self.process_pair, pair) for pair in active_pairs]
+            concurrent.futures.wait(futures)
             
-            if candles:
-                # Unpack all SIX variables now
-                live_price, closed_price, sma, atr_pct, momentum, rsi = self.calculate_indicators(candles, period=14)
-                
-                if live_price and sma:
-                    self.update_database(symbol, live_price, closed_price, sma, atr_pct, momentum, rsi)
-                    
-            time.sleep(1.5)
+        self.logger.success("ORACLE", f"Market scan complete. {len(active_pairs)} pairs processed.")
             
-        self.logger.success("ORACLE", "Market scan complete. Dashboard updated.")
-            
-# If this file is run directly, it will do one single scan to test the pipes.
 if __name__ == "__main__":
     from logger import BotLogger
     test_logger = BotLogger()

@@ -10,7 +10,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from flask import Flask, jsonify, render_template
 
-from apscheduler.schedulers.background import BackgroundScheduler
+#from apscheduler.schedulers.background import BackgroundScheduler
 from logger import BotLogger
 from market_oracle import KrakenOracle
 from treasury_manager import TreasuryManager
@@ -47,17 +47,6 @@ class ExecutiveEngineApp:
             self.treasury = TreasuryManager(self.db_log, initial_capital=paper_capital, environment=self.db_log.environment)
         
         self._setup_routes()
-        self._setup_scheduler()
-
-    def _setup_scheduler(self):
-        print("⚙️ Initializing Executive Engine Background Workers...")
-        self.scheduler = BackgroundScheduler()
-        self.oracle = KrakenOracle(self.db_log)
-
-        # Trigger the master heartbeat instead of just the oracle
-        self.scheduler.add_job(func=self._engine_tick, trigger="interval", minutes=5)
-        self.scheduler.add_job(func=self._engine_tick, trigger="date") 
-        self.scheduler.start()
 
     def get_db_connection(self):
         return psycopg2.connect(
@@ -82,15 +71,6 @@ class ExecutiveEngineApp:
         except Exception as e:
             print(f"Warning: Failed to fetch historical paper balance. {e}")
         return 10000.00 # Base starting capital if no history exists
-
-    def _engine_tick(self):
-        """The master loop: Oracle scans the market, Execution Engine makes the trades."""
-        # 1. The Eyes: Update prices and indicator math
-        self.oracle.scan_markets()
-        
-        # 2. The Hands: Execute based on the CURRENT active dimension
-        trader = ExecutionEngine(self.db_log, environment=self.db_log.environment)
-        trader.run_cycle()
 
     def _setup_routes(self):
         @self.app.route('/')
@@ -199,6 +179,70 @@ class ExecutiveEngineApp:
                 traceback.print_exc()
                 return jsonify({"status": "error", "message": str(e)})
                 
+        @self.app.route('/api/override/open', methods=['POST'])
+        def override_open():
+            from flask import request
+            import json
+            data = request.json
+            sym = data.get('symbol')
+            env_str = "LIVE" if self.LIVE_MODE else "PAPER"
+            
+            base_asset = sym.split('/')[0].lower()
+            strat_id = f"{base_asset}_pure"
+
+            try:
+                conn = self.get_db_connection()
+                cur = conn.cursor(cursor_factory=RealDictCursor)
+                
+                # 1. Grab current live price and ATR
+                cur.execute("SELECT price, atr_pct FROM live_market_data WHERE symbol = %s;", (sym,))
+                m_data = cur.fetchone()
+                if not m_data:
+                    return jsonify({"status": "error", "message": "No market data available."})
+                
+                price = float(m_data['price'])
+                atr_pct = float(m_data['atr_pct']) / 100.0 if m_data['atr_pct'] else 0.01
+
+                # 2. Ask Treasury for permitted capital
+                cur.execute("SELECT allocations FROM treasury_state WHERE environment = %s ORDER BY updated_time DESC LIMIT 1;", (env_str,))
+                t_row = cur.fetchone()
+                if not t_row:
+                    return jsonify({"status": "error", "message": "No treasury state found."})
+                    
+                allocations = json.loads(t_row['allocations']) if isinstance(t_row['allocations'], str) else t_row['allocations']
+                total_allocated = float(allocations.get(strat_id, allocations.get("master", 0.0)))
+
+                if total_allocated < 10:
+                    return jsonify({"status": "error", "message": f"Not enough capital allocated to {strat_id}."})
+
+                # 3. Math for Tranche 1
+                max_tranches = 3
+                tranche_usd = total_allocated / max_tranches
+                qty = tranche_usd / price
+                sl = price - (price * (atr_pct * 1.5))
+                tp1 = price + (price * atr_pct)
+                tp2 = price + (price * (atr_pct * 2.0))
+                tp3 = price + (price * (atr_pct * 3.0))
+
+                # 4. Insert Tranche 1 State
+                cur.execute("""
+                    INSERT INTO positions (symbol, strategy_id, environment, status, current_tranche, max_tranches, qty, average_entry_price, entry_price, sl_price, tp1_price, tp2_price, tp3_price, initial_margin_usd, last_updated)
+                    VALUES (%s, %s, %s, 'OPEN', 1, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (symbol, strategy_id, environment)
+                    DO UPDATE SET status = 'OPEN', current_tranche = 1, max_tranches = EXCLUDED.max_tranches, qty = EXCLUDED.qty, average_entry_price = EXCLUDED.average_entry_price, entry_price = EXCLUDED.entry_price, sl_price = EXCLUDED.sl_price, tp1_price = EXCLUDED.tp1_price, tp2_price = EXCLUDED.tp2_price, tp3_price = EXCLUDED.tp3_price, initial_margin_usd = EXCLUDED.initial_margin_usd, last_updated = CURRENT_TIMESTAMP;
+                """, (sym, strat_id, env_str, max_tranches, qty, price, price, sl, tp1, tp2, tp3, tranche_usd))
+                
+                conn.commit()
+                self.db_log._write_log("EXECUTIVE", "SUCCESS", f"MANUAL TRANCHE 1 TRIGGERED [{sym}] @ ${price:.2f}")
+
+                cur.close()
+                conn.close()
+                return jsonify({"status": "success", "message": f"Force entered {sym}"})
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return jsonify({"status": "error", "message": str(e)})
+                
         @self.app.route('/api/change_play', methods=['POST'])
         def change_play():
             from flask import request
@@ -229,7 +273,14 @@ class ExecutiveEngineApp:
                 if balance_row: data["balance"] = float(balance_row['total_capital'])
                 data["live_mode"] = self.LIVE_MODE
 
-                cur.execute("SELECT strategy_id, symbol, status, qty, entry_price, sl_price, tp_price FROM positions WHERE environment = %s ORDER BY status ASC, strategy_id ASC;", (env_str,))
+                # UPDATED: Fetching tranche state and tiered TP targets
+                cur.execute("""
+                    SELECT strategy_id, symbol, status, current_tranche, max_tranches, 
+                           qty, average_entry_price, sl_price, tp1_price, tp2_price, tp3_price 
+                    FROM positions 
+                    WHERE environment = %s 
+                    ORDER BY status ASC, strategy_id ASC;
+                """, (env_str,))
                 data["positions"] = cur.fetchall()
 
                 cur.execute("SELECT symbol, price, closed_price, sma, atr_pct, is_hunting, momentum_ignition, rsi FROM live_market_data;")
