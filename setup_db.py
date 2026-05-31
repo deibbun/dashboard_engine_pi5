@@ -163,14 +163,12 @@ def bootstrap_database():
             );
         """)
 
-        # Insert our initial batch, including a new one (ADA) to prove it's dynamic
         cur.execute("""
             INSERT INTO monitored_pairs (ticker, kraken_symbol, is_active)
             VALUES 
                 ('BTC/USD', 'XXBTZUSD', true),
                 ('ETH/USD', 'XETHZUSD', true),
-                ('SOL/USD', 'SOLUSD', true),
-                ('ADA/USD', 'ADAUSD', true)
+                ('SOL/USD', 'SOLUSD', true)
             ON CONFLICT (ticker) DO NOTHING;
         """)
 

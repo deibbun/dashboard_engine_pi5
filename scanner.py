@@ -5,29 +5,38 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import time
-from logger import BotLogger
+
+import timefrom logger import BotLogger
 from market_oracle import KrakenOracle
 from execution_engine import ExecutionEngine
+from radar import MarketRadar  # <-- Import the Radar
 
-# Change this to "LIVE" when you are ready to trade real capital
 ACTIVE_ENVIRONMENT = "PAPER"
 
 def main():
     db_log = BotLogger()
     db_log.environment = ACTIVE_ENVIRONMENT
     oracle = KrakenOracle(db_log)
+    radar = MarketRadar(db_log, max_dynamic_pairs=3) # Allow 3 wildcards
     
     db_log.info("SYSTEM", f"🚀 Headless Scanner Booting in {ACTIVE_ENVIRONMENT} mode...")
     
+    loops = 0
+    
     while True:
         try:
-            # 1. The Eyes: Update prices and indicators
+            # 1. Run the Radar (Every 240 loops ~ 1 hour)
+            if loops % 240 == 0:
+                radar.discover_top_movers()
+
+            # 2. The Eyes: Update prices and indicators
             oracle.scan_markets()
             
-            # 2. The Hands: Manage tranches and execute trades
+            # 3. The Hands: Manage tranches and execute trades
             trader = ExecutionEngine(db_log, environment=ACTIVE_ENVIRONMENT)
             trader.run_cycle()
+            
+            loops += 1
             
         except Exception as e:
             db_log.error("SYSTEM", f"Scanner loop exception: {e}")

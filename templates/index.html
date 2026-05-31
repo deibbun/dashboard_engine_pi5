@@ -55,7 +55,7 @@
             <h3>🌐 Market Oracle (V2)</h3>
             <div class="table-container">
                 <table id="market-table">
-                    <thead><tr><th>Symbol</th><th>Live Price</th><th>Closed Price</th><th>SMA</th><th>ATR %</th><th>Momentum</th><th>RSI</th><th>Action</th></tr></thead>
+                    <thead><tr><th>Symbol</th><th>Status</th><th>Live Price</th><th>Closed Price</th><th>SMA</th><th>ATR %</th><th>Momentum</th><th>RSI</th><th>Action</th></tr></thead>
                     <tbody></tbody>
                 </table>
             </div>
@@ -240,8 +240,11 @@
                     modeBtn.style.color = "#4CAF50";
                 }
 
-                // Market Oracle Table (with FORCE BUY buttons)
-                document.querySelector('#market-table tbody').innerHTML = data.market.map(row => {
+                // --- UPGRADED: Market Oracle Table ---
+                // Filter to ONLY display active crypto
+                const activeMarket = data.market.filter(row => row.is_active === true);
+
+                document.querySelector('#market-table tbody').innerHTML = activeMarket.map(row => {
                     const p = parseFloat(row.price);
                     const s = parseFloat(row.sma);
                     const priceColor = p > s ? '#4CAF50' : '#f44336';
@@ -255,6 +258,7 @@
 
                     return `<tr>
                         <td>${row.symbol}</td>
+                        <td style="color: #4CAF50; font-weight: bold;">ACTIVE</td>
                         <td style="color: ${priceColor}; font-weight: bold;">${row.price}</td>
                         <td>${row.closed_price}</td>
                         <td>${row.sma}</td>
@@ -265,8 +269,11 @@
                     </tr>`;
                 }).join('');
 
-                // --- UPGRADED: Positions Table with Tranche Logic ---
-                document.querySelector('#positions-table tbody').innerHTML = data.positions.map(row => {
+                // --- UPGRADED: Positions Table ---
+                // Filter to ONLY display active crypto OR crypto with an open trade
+                const activePositions = data.positions.filter(row => row.is_active === true || row.status === 'OPEN');
+
+                document.querySelector('#positions-table tbody').innerHTML = activePositions.map(row => {
                     const isOpen = row.status === 'OPEN';
                     const statusColor = isOpen ? '#4CAF50' : '#bbb';
                     

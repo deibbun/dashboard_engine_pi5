@@ -151,7 +151,7 @@ class ExecutiveEngineApp:
                     """, (strat, sym, env_str))
                     
                     # --- Apply PnL to Treasury on override ---
-                    cur.execute("SELECT total_capital, reserve, allocations, play_name FROM treasury_state WHERE environment = %s ORDER BY updated_time DESC LIMIT 1;", (ENV_STR,))
+                    cur.execute("SELECT total_capital, reserve, allocations, play_name FROM treasury_state WHERE environment = %s ORDER BY updated_time DESC LIMIT 1;", (env_str,))
                     t_state = cur.fetchone()
                     if t_state:
                         import json
@@ -162,7 +162,7 @@ class ExecutiveEngineApp:
                         cur.execute("""
                             INSERT INTO treasury_state (environment, play_name, total_capital, reserve, allocations)
                             VALUES (%s, %s, %s, %s, %s)
-                        """, (env_str, t_state['play_name'], new_capital, new_reserve, allocations))
+                        """, (env_str, t_state['play_name'], new_capital, new_reserve, allocs))
                         
                     
                     conn.commit()
@@ -273,17 +273,24 @@ class ExecutiveEngineApp:
                 if balance_row: data["balance"] = float(balance_row['total_capital'])
                 data["live_mode"] = self.LIVE_MODE
 
-                # UPDATED: Fetching tranche state and tiered TP targets
+                # UPDATED: Fetching tranche state, targets, AND active status
                 cur.execute("""
-                    SELECT strategy_id, symbol, status, current_tranche, max_tranches, 
-                           qty, average_entry_price, sl_price, tp1_price, tp2_price, tp3_price 
-                    FROM positions 
-                    WHERE environment = %s 
-                    ORDER BY status ASC, strategy_id ASC;
+                    SELECT p.strategy_id, p.symbol, p.status, p.current_tranche, p.max_tranches, 
+                           p.qty, p.average_entry_price, p.sl_price, p.tp1_price, p.tp2_price, p.tp3_price,
+                           m.is_active
+                    FROM positions p
+                    JOIN monitored_pairs m ON p.symbol = m.ticker
+                    WHERE p.environment = %s 
+                    ORDER BY p.status ASC, p.strategy_id ASC;
                 """, (env_str,))
                 data["positions"] = cur.fetchall()
 
-                cur.execute("SELECT symbol, price, closed_price, sma, atr_pct, is_hunting, momentum_ignition, rsi FROM live_market_data;")
+                # UPDATED: Fetching market data AND active status
+                cur.execute("""
+                    SELECT l.symbol, l.price, l.closed_price, l.sma, l.atr_pct, l.is_hunting, l.momentum_ignition, l.rsi, m.is_active 
+                    FROM live_market_data l
+                    JOIN monitored_pairs m ON l.symbol = m.ticker;
+                """)
                 data["market"] = cur.fetchall()
 
                 # FIXED: Correct ORDER BY, aliased columns to match your JS, fixed the loop indentation

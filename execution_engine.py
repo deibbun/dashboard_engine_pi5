@@ -8,12 +8,6 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 from strategies.factory import get_strategy  # <-- ADD THIS
-PLAYBOOK_REGISTRY = {
-    "sniper_v1": SniperPlaybook(tranche_spacing_pct=0.03, max_tranches=3),
-    "dip_buyer": DipBuyerPlaybook(tranche_spacing_pct=0.05, max_tranches=4)
-}
-
-# ==========================================
 
 class ExecutionEngine:
     def __init__(self, logger, environment="PAPER"):
@@ -227,7 +221,44 @@ class ExecutionEngine:
             conn.close()
         except Exception as e:
             self.logger.error("EXECUTION", f"Exit processing failed: {e}")
+            
+    def prune_dead_assets(self):
+        """Dynamically removes non-core assets that are inactive and not currently in a trade."""
+        core_symbols = ('BTC/USD', 'ETH/USD', 'SOL/USD')
+        try:
+            conn = self._get_db_connection()
+            cur = conn.cursor()
+            
+            # 1. Delete from positions (Only if WAITING, we don't want to delete an active trade!)
+            cur.execute("""
+                DELETE FROM positions 
+                WHERE symbol NOT IN %s 
+                  AND status = 'WAITING' 
+                  AND symbol NOT IN (SELECT ticker FROM monitored_pairs WHERE is_active = TRUE);
+            """, (core_symbols,))
+            
+            # 2. Delete from live_market_data (Only if no OPEN positions exist for it)
+            cur.execute("""
+                DELETE FROM live_market_data 
+                WHERE symbol NOT IN %s 
+                  AND symbol NOT IN (SELECT symbol FROM positions WHERE status = 'OPEN')
+                  AND symbol NOT IN (SELECT ticker FROM monitored_pairs WHERE is_active = TRUE);
+            """, (core_symbols,))
+            
+            # 3. Clean up the monitored_pairs table entirely so it doesn't bloat
+            cur.execute("""
+                DELETE FROM monitored_pairs 
+                WHERE ticker NOT IN %s 
+                  AND is_active = FALSE;
+            """, (core_symbols,))
+
+            conn.commit()
+            cur.close()
+            conn.close()
+        except Exception as e:
+            self.logger.error("EXECUTION", f"Failed to prune dead assets: {e}")
 
     def run_cycle(self):
         self.process_exits()
         self.process_entries()
+        self.prune_dead_assets()
