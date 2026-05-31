@@ -1,38 +1,18 @@
 import os
-import json
-import psycopg2
-from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ==========================================
-# THE PLAYBOOK FACTORY (UPGRADED FOR TRANCHES)
-# ==========================================
-class BasePlaybook:
-    def __init__(self, tranche_spacing_pct=0.04, max_tranches=3):
-        # Default: Buy the next tranche if price drops 4% below the average entry
-        self.tranche_spacing_pct = tranche_spacing_pct
-        self.max_tranches = max_tranches
+import json
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-    def evaluate_initial(self, m):
-        raise NotImplementedError
-
-class SniperPlaybook(BasePlaybook):
-    def evaluate_initial(self, m):
-        is_uptrend = float(m['closed_price']) > float(m['sma'])
-        has_momentum = str(m['momentum_ignition']).lower() in ('true', '1', 't')
-        not_overbought = float(m['rsi']) < 70
-        return "BUY" if (is_uptrend and has_momentum and not_overbought) else "HOLD"
-
-class DipBuyerPlaybook(BasePlaybook):
-    def evaluate_initial(self, m):
-        return "BUY" if (float(m['rsi']) < 30 and float(m['atr_pct']) > 1.5) else "HOLD"
-
+from strategies.factory import get_strategy  # <-- ADD THIS
 PLAYBOOK_REGISTRY = {
     "sniper_v1": SniperPlaybook(tranche_spacing_pct=0.03, max_tranches=3),
     "dip_buyer": DipBuyerPlaybook(tranche_spacing_pct=0.05, max_tranches=4)
 }
+
 # ==========================================
 
 class ExecutionEngine:
@@ -92,12 +72,15 @@ class ExecutionEngine:
                 
                 if total_allocated < 10.0: continue
                 
-                playbook = PLAYBOOK_REGISTRY.get("sniper_v1") # Defaulting for now
+                #playbook = PLAYBOOK_REGISTRY.get("sniper_v1") # Defaulting for now
+                strategy_name = opp.get('playbook_name', "sniper_v1")
+                playbook = get_strategy(strategy_name)
                 state = open_states.get((sym, strat_id))
                 
                 # --- SCENARIO 1: INITIAL ENTRY (Tranche 1) ---
                 if not state:
-                    if playbook.evaluate_initial(opp) == "BUY":
+                    #if playbook.evaluate_initial(opp) == "BUY":
+                    if playbook.evaluate(opp) == "BUY":
                         tranche_usd = total_allocated / playbook.max_tranches
                         qty = tranche_usd / price
                         
