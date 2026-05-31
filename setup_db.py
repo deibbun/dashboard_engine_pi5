@@ -64,9 +64,9 @@ def bootstrap_database():
                 for sym in symbols:
                     if strat == 'master' or strat.split('_')[0].upper() in sym:
                         cur.execute("""
-                            INSERT INTO positions (strategy_id, symbol, environment, status, qty, entry_price, initial_margin_usd, sl_price, tp_price)
+                            INSERT INTO positions (strategy_id, symbol, environment, status, qty, entry_price, initial_margin_usd, sl_price, tp1_price, tp2_price, tp3_price)
                             VALUES
-                                (%s, %s, %s, 'WAITING', 0, 0, 0, 0, 0)
+                                (%s, %s, %s, 'WAITING', 0, 0, 0, 0, 0, 0, 0)
                             ON CONFLICT (symbol, strategy_id, environment)
                             DO NOTHING;
                         """, (strat, sym, env))
@@ -77,6 +77,8 @@ def bootstrap_database():
             CREATE TABLE IF NOT EXISTS live_market_data (
                 symbol VARCHAR(20) PRIMARY KEY,
                 price NUMERIC(16,4) DEFAULT 0.0000,
+                closed_price NUMERIC(16,4),
+                rsi NUMERIC(16,4),
                 sma NUMERIC(16,4) DEFAULT 0.0000,
                 atr_pct NUMERIC DEFAULT 0.0,
                 vol_multiplier NUMERIC DEFAULT 1.0,

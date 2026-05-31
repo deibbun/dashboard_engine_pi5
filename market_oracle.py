@@ -111,6 +111,12 @@ class KrakenOracle:
             
     def update_database(self, symbol, live_price, closed_price, sma, atr_pct, momentum, rsi):
         """Pushes data into the DB using an UPSERT to support dynamic pairs."""
+        live_price = float(live_price)
+        closed_price = float(closed_price)
+        sma = float(sma)
+        atr_pct = float(atr_pct)
+        rsi = float(rsi)
+        momentum = bool(momentum)
         is_hunting = (closed_price > sma) and momentum and (rsi < 70)
         
         # UPSERT: Insert if new pair, otherwise update the existing row.

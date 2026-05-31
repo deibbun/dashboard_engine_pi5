@@ -20,14 +20,14 @@ class BasePlaybook:
 
 class SniperPlaybook(BasePlaybook):
     def evaluate_initial(self, m):
-        is_uptrend = m['closed_price'] > m['sma']
+        is_uptrend = float(m['closed_price']) > float(m['sma'])
         has_momentum = str(m['momentum_ignition']).lower() in ('true', '1', 't')
-        not_overbought = m['rsi'] < 70
+        not_overbought = float(m['rsi']) < 70
         return "BUY" if (is_uptrend and has_momentum and not_overbought) else "HOLD"
 
 class DipBuyerPlaybook(BasePlaybook):
     def evaluate_initial(self, m):
-        return "BUY" if (m['rsi'] < 30 and m['atr_pct'] > 1.5) else "HOLD"
+        return "BUY" if (float(m['rsi']) < 30 and float(m['atr_pct']) > 1.5) else "HOLD"
 
 PLAYBOOK_REGISTRY = {
     "sniper_v1": SniperPlaybook(tranche_spacing_pct=0.03, max_tranches=3),
