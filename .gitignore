@@ -12,3 +12,4 @@ __pycache__/
 # Database (if you ever use local SQLite files)
 *.db
 market_oracle_v2.py
+crypto.txt

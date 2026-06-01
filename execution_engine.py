@@ -7,7 +7,8 @@ import json
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from strategies.factory import get_strategy  # <-- ADD THIS
+from strategies.factory import get_strategy
+from accountant import TradeAccountant
 
 KRAKEN_TAKER_FEE = float(os.getenv('KRAKEN_TAKER_FEE', 0.0025))
 KRAKEN_MAKER_FEE = float(os.getenv('KRAKEN_MAKER_FEE', 0.0040))
@@ -16,6 +17,8 @@ class ExecutionEngine:
     def __init__(self, logger, environment="PAPER"):
         self.logger = logger
         self.environment = environment
+        self.account = TradeAccountant(environment=self.environment)
+        
         self.db_params = {
             'dbname': os.getenv('DB_NAME'),
             'user': os.getenv('DB_USER'),
@@ -60,7 +63,7 @@ class ExecutionEngine:
 
             for opp in opportunities:
                 sym = opp['symbol']
-                price = float(opp['price'])
+                target_price = float(opp['price'])
                 atr_pct = float(opp['atr_pct']) / 100.0 if opp['atr_pct'] else 0.01
                 
                 base_asset = sym.split('/')[0].lower()
@@ -69,23 +72,24 @@ class ExecutionEngine:
                 
                 if total_allocated < 10.0: continue
                 
-                #playbook = PLAYBOOK_REGISTRY.get("sniper_v1") # Defaulting for now
                 strategy_name = opp.get('playbook_name', "sniper_v1")
                 playbook = get_strategy(strategy_name)
                 state = open_states.get((sym, strat_id))
                 
                 # --- SCENARIO 1: INITIAL ENTRY (Tranche 1) ---
                 if not state:
-                    #if playbook.evaluate_initial(opp) == "BUY":
                     if playbook.evaluate(opp) == "BUY":
+                        
+                        filled_price = self.accountant.apply_entry_slippage(target_price)
+                        
                         tranche_usd = total_allocated / playbook.max_tranches
-                        qty = tranche_usd / price
+                        qty = tranche_usd / filled_price
                         
                         # Set wide targets based on ATR
-                        sl = price - (price * (atr_pct * 1.5))
-                        tp1 = price + (price * atr_pct)
-                        tp2 = price + (price * (atr_pct * 2.0))
-                        tp3 = price + (price * (atr_pct * 3.0))
+                        sl = filled_price - (filled_price * (atr_pct * 1.5))
+                        tp1 = filled_price + (filled_price * atr_pct)
+                        tp2 = filled_price + (filled_price * (atr_pct * 2.0))
+                        tp3 = filled_price + (filled_price * (atr_pct * 3.0))
                         
                         insert_sql = """
                             INSERT INTO positions (symbol, strategy_id, environment, status, current_tranche, max_tranches, qty, average_entry_price, entry_price, sl_price, tp1_price, tp2_price, tp3_price, initial_margin_usd, last_updated)
@@ -93,9 +97,9 @@ class ExecutionEngine:
                             ON CONFLICT (symbol, strategy_id, environment)
                             DO UPDATE SET status = 'OPEN', current_tranche = 1, max_tranches = EXCLUDED.max_tranches, qty = EXCLUDED.qty, average_entry_price = EXCLUDED.average_entry_price, entry_price = EXCLUDED.entry_price, sl_price = EXCLUDED.sl_price, tp1_price = EXCLUDED.tp1_price, tp2_price = EXCLUDED.tp2_price, tp3_price = EXCLUDED.tp3_price, initial_margin_usd = EXCLUDED.initial_margin_usd, last_updated = CURRENT_TIMESTAMP;
                         """
-                        cur.execute(insert_sql, (sym, strat_id, self.environment, playbook.max_tranches, qty, price, price, sl, tp1, tp2, tp3, tranche_usd))
+                        cur.execute(insert_sql, (sym, strat_id, self.environment, playbook.max_tranches, qty, filled_price, filled_price, sl, tp1, tp2, tp3, tranche_usd))
                         conn.commit()
-                        self.logger.success(strat_id, f"TRANCHE 1 FILLED [{sym}] - Avg Price: ${price:.2f}")
+                        self.logger.success(strat_id, f"TRANCHE 1 FILLED [{sym}] - Avg Price: ${filled_price:.2f} (Target was ${target_price:.2f})")
 
                 # --- SCENARIO 2: SCALING IN (Tranches 2+) ---
                 else:
@@ -106,16 +110,19 @@ class ExecutionEngine:
                         # Check if price dropped enough to trigger the next scale-in
                         target_drop_price = avg_entry * (1.0 - playbook.tranche_spacing_pct)
                         
-                        if price <= target_drop_price:
+                        if target_price <= target_drop_price:
+                            
+                            filled_price = self.accountant.apply_entry_slippage(target_price)
+                            
                             tranche_usd = total_allocated / playbook.max_tranches
-                            new_qty = tranche_usd / price
+                            new_qty = tranche_usd / filled_price
                             
                             # The critical math: blending the average price
                             cur.execute("SELECT qty FROM positions WHERE symbol = %s AND strategy_id = %s AND environment = %s", (sym, strat_id, self.environment))
                             old_qty = float(cur.fetchone()['qty'])
                             
                             total_qty = old_qty + new_qty
-                            new_avg = ((old_qty * avg_entry) + (new_qty * price)) / total_qty
+                            new_avg = ((old_qty * avg_entry) + (new_qty * filled_price)) / total_qty
                             
                             cur.execute("""
                                 UPDATE positions 

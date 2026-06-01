@@ -2,14 +2,36 @@
 
 import os
 from dotenv import load_dotenv
+
+load_dotenv()
+
 import time
 import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import concurrent.futures
+import random  # <-- Added for chaos_monkey
 
-load_dotenv()
-
+def chaos_monkey(func):
+    """Wrapper to simulate Kraken network failures during paper trading."""
+    def wrapper(self, *args, **kwargs):
+        # Only inject chaos in PAPER mode
+        if getattr(self.logger, 'environment', 'PAPER') == 'LIVE':
+            return func(self, *args, **kwargs)
+            
+        chaos_roll = random.randint(1, 100)
+        
+        if chaos_roll <= 2:  # 2% chance of a total timeout
+            self.logger.warning("CHAOS", "Simulating Kraken 504 Gateway Timeout.")
+            raise requests.exceptions.Timeout("Simulated Timeout")
+            
+        elif chaos_roll <= 5:  # 3% chance of massive latency
+            self.logger.warning("CHAOS", "Simulating extreme API latency (3 seconds).")
+            time.sleep(3)
+            
+        return func(self, *args, **kwargs)
+    return wrapper
+    
 class KrakenOracle:
     def __init__(self, logger):
         self.logger = logger
@@ -40,6 +62,7 @@ class KrakenOracle:
             self.logger.error("ORACLE", f"Failed to fetch monitored pairs: {e}")
             return []
             
+    @chaos_monkey
     def fetch_ohlc_data(self, kraken_symbol, interval=60):
         """Pulls the latest hourly candlestick data from Kraken."""
         url = f"{self.base_url}/OHLC?pair={kraken_symbol}&interval={interval}"
