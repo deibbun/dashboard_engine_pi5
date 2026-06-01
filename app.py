@@ -146,7 +146,7 @@ class ExecutiveEngineApp:
                     # 3. Liquidate the position
                     cur.execute("""
                         UPDATE positions 
-                        SET status = 'WAITING', qty = 0, entry_price = 0, sl_price = 0, tp_price = 0, initial_margin_usd = 0, last_updated = CURRENT_TIMESTAMP
+                        SET status = 'WAITING', qty = 0, entry_price = 0, sl_price = 0, tp1_price = 0, tp2_price = 0, tp3_price = 0, initial_margin_usd = 0, last_updated = CURRENT_TIMESTAMP
                         WHERE strategy_id = %s AND symbol = %s AND environment = %s;
                     """, (strat, sym, env_str))
                     

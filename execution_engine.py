@@ -9,6 +9,9 @@ from psycopg2.extras import RealDictCursor
 
 from strategies.factory import get_strategy  # <-- ADD THIS
 
+KRAKEN_TAKER_FEE = float(os.getenv('KRAKEN_TAKER_FEE', 0.0025))
+KRAKEN_MAKER_FEE = float(os.getenv('KRAKEN_MAKER_FEE', 0.0040))
+
 class ExecutionEngine:
     def __init__(self, logger, environment="PAPER"):
         self.logger = logger
@@ -135,6 +138,10 @@ class ExecutionEngine:
             JOIN live_market_data m ON p.symbol = m.symbol
             WHERE p.status = 'OPEN' AND p.environment = %s;
         """
+        
+        conn = None
+        cur = None
+        
         try:
             conn = self._get_db_connection()
             cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -147,6 +154,7 @@ class ExecutionEngine:
                 current_price = float(pos['current_price'])
                 avg_entry = float(pos['average_entry_price'])
                 qty = float(pos['qty'])
+                margin = float(pos['initial_margin_usd'])
                 
                 sl_price = float(pos['sl_price'])
                 tp1 = float(pos['tp1_price'])
@@ -158,9 +166,13 @@ class ExecutionEngine:
                 
                 # 1. HARD STOP LOSS (Liquidate Everything)
                 if current_price <= sl_price:
-                    pnl_realized = (current_price - avg_entry) * qty
+                    financials = self.accountant.calculate_exit(avg_entry, current_price, qty)
+                    pnl_realized = financials["net_pnl"]
+                    
                     cur.execute("""
-                        UPDATE positions SET status = 'WAITING', current_tranche = 0, qty = 0, average_entry_price = 0, sl_price = 0, tp1_price = 0, tp2_price = 0, tp3_price = 0, initial_margin_usd = 0
+                        UPDATE positions 
+                        SET status = 'WAITING', current_tranche = 0, qty = 0, average_entry_price = 0, entry_price = 0, 
+                            sl_price = 0, tp1_price = 0, tp2_price = 0, tp3_price = 0, initial_margin_usd = 0, last_updated = CURRENT_TIMESTAMP
                         WHERE strategy_id = %s AND symbol = %s AND environment = %s;
                     """, (strat, sym, self.environment))
                     action_taken = "STOP LOSS (FULL CLOSE)"
@@ -168,30 +180,51 @@ class ExecutionEngine:
                 # 2. TAKE PROFIT 1 HIT (Sell 33%, Move SL to Break Even)
                 elif tp1 > 0 and current_price >= tp1:
                     sell_qty = qty * 0.33
-                    pnl_realized = (current_price - avg_entry) * sell_qty
+                    margin_reduction = margin * 0.33
+                    
+                    financials = self.accountant.calculate_exit(avg_entry, current_price, sell_qty)
+                    pnl_realized = financials["net_pnl"]
+                    
                     new_qty = qty - sell_qty
+                    new_margin = margin - margin_reduction
+                    
                     cur.execute("""
-                        UPDATE positions SET qty = %s, tp1_price = 0, sl_price = %s
+                        UPDATE positions 
+                        SET qty = %s, initial_margin_usd = %s, tp1_price = 0, sl_price = %s, last_updated = CURRENT_TIMESTAMP
                         WHERE strategy_id = %s AND symbol = %s AND environment = %s;
-                    """, (new_qty, avg_entry, strat, sym, self.environment))
+                    """, (new_qty, new_margin, avg_entry, strat, sym, self.environment))
                     action_taken = "TP1 HIT (RISK FREE SECURED)"
                     
                 # 3. TAKE PROFIT 2 HIT (Sell another chunk, Trail SL higher)
                 elif tp2 > 0 and current_price >= tp2:
-                    sell_qty = qty * 0.50 # Sell half of what's left
-                    pnl_realized = (current_price - avg_entry) * sell_qty
+                    sell_qty = qty * 0.50
+                    margin_reduction = margin * 0.50
+                    
+                    financials = self.accountant.calculate_exit(avg_entry, current_price, sell_qty)
+                    pnl_realized = financials["net_pnl"]
+                    
                     new_qty = qty - sell_qty
+                    new_margin = margin - margin_reduction
+                    
+                    # Trail stop loss to halfway between entry and TP2 to ensure profit lock
+                    trailed_sl = avg_entry + ((current_price - avg_entry) * 0.5)
+                    
                     cur.execute("""
-                        UPDATE positions SET qty = %s, tp2_price = 0, sl_price = %s
+                        UPDATE positions 
+                        SET qty = %s, initial_margin_usd = %s, tp2_price = 0, sl_price = %s, last_updated = CURRENT_TIMESTAMP
                         WHERE strategy_id = %s AND symbol = %s AND environment = %s;
-                    """, (new_qty, tp1, strat, sym, self.environment)) # Move SL to old TP1 level
+                    """, (new_qty, new_margin, trailed_sl, strat, sym, self.environment))
                     action_taken = "TP2 HIT (PROFIT TRAILED)"
                     
                 # 4. TAKE PROFIT 3 HIT (Final Liquidation)
                 elif tp3 > 0 and current_price >= tp3:
-                    pnl_realized = (current_price - avg_entry) * qty
+                    financials = self.accountant.calculate_exit(avg_entry, current_price, qty)
+                    pnl_realized = financials["net_pnl"]
+                    
                     cur.execute("""
-                        UPDATE positions SET status = 'WAITING', current_tranche = 0, qty = 0, average_entry_price = 0, sl_price = 0, tp1_price = 0, tp2_price = 0, tp3_price = 0, initial_margin_usd = 0
+                        UPDATE positions 
+                        SET status = 'WAITING', current_tranche = 0, qty = 0, average_entry_price = 0, entry_price = 0, 
+                            sl_price = 0, tp1_price = 0, tp2_price = 0, tp3_price = 0, initial_margin_usd = 0, last_updated = CURRENT_TIMESTAMP
                         WHERE strategy_id = %s AND symbol = %s AND environment = %s;
                     """, (strat, sym, self.environment))
                     action_taken = "TP3 HIT (FULL TARGET REACHED)"
@@ -199,11 +232,11 @@ class ExecutionEngine:
                 # Apply PnL to Treasury if action was taken
                 if action_taken:
                     conn.commit()
-                    
-                    # Update Treasury Balance
                     cur.execute("SELECT total_capital, reserve, allocations, play_name FROM treasury_state WHERE environment = %s ORDER BY updated_time DESC LIMIT 1;", (self.environment,))
                     t_state = cur.fetchone()
+                    
                     if t_state:
+                        import json
                         new_capital = round(float(t_state['total_capital']) + pnl_realized, 2)
                         new_reserve = round(float(t_state['reserve']) + pnl_realized, 2)
                         allocs = t_state['allocations'] if isinstance(t_state['allocations'], str) else json.dumps(t_state['allocations'])
@@ -215,12 +248,21 @@ class ExecutionEngine:
                         conn.commit()
                         
                     log_type = "SUCCESS" if pnl_realized > 0 else "WARNING"
-                    self.logger._write_log(strat, log_type, f"{action_taken} [{sym}] @ ${current_price:.2f} | PnL: ${pnl_realized:.2f}")
+                    self.logger.info(
+                        strat, 
+                        f"{action_taken} [{sym}] @ ${current_price:.2f} | "
+                        f"Gross: ${financials['gross_pnl']:.2f} | Net PnL: ${pnl_realized:.2f}"
+                    )
 
-            cur.close()
-            conn.close()
         except Exception as e:
             self.logger.error("EXECUTION", f"Exit processing failed: {e}")
+            
+        finally:
+            # This ensures the connection never hangs open, no matter how the query ends
+            if cur:
+                cur.close()
+            if conn:
+                conn.close()
             
     def prune_dead_assets(self):
         """Dynamically removes non-core assets that are inactive and not currently in a trade."""
@@ -249,7 +291,10 @@ class ExecutionEngine:
             cur.execute("""
                 DELETE FROM monitored_pairs 
                 WHERE ticker NOT IN %s 
-                  AND is_active = FALSE;
+                  AND is_active = FALSE
+                  AND ticker NOT IN (
+                    SELECT symbol FROM positions WHERE status = 'OPEN'
+                  );
             """, (core_symbols,))
 
             conn.commit()
