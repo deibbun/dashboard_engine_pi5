@@ -15,9 +15,9 @@ db_params = {
 }
 
 default_pairs = [
-    ('XBT/USD'), True),
-    ('ETH/USD'), True),
-    ('SOL/USD'), True)
+    (('XBT/USD'), True),
+    (('ETH/USD'), True),
+    (('SOL/USD'), True)
 ]
 
 def bootstrap_database():

@@ -21,9 +21,7 @@ class TreasuryManager:
         self.execute_playbook("normal_split")
         
     def reconcile_with_exchange_truth(self, actual_exchange_balance):
-        """Snaps internal ledger states back to match the exchange truth 
-        when no active strategy allocations are exposed to market risks.
-        """
+        """Snaps internal ledger states back to match the exchange truth when no active strategy allocations are exposed to market risks."""
         conn = self._get_db_connection()
         cur = conn.cursor()
         try:

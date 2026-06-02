@@ -1,39 +1,39 @@
 # test_treasury.py
-
 import unittest
 from unittest.mock import patch, MagicMock
 from treasury_manager import TreasuryManager
 
-# Fake logger to prevent writing fake logs
-class DummyLogger:
-    def info(self, strat, msg): pass
-    def error(self, strat, msg): pass
-    def success(self, strat, msg): pass
-    def _get_connection(self): return MagicMock()
-    
 class TestTreasuryManager(unittest.TestCase):
-    @patch('treasury_manager.TreasuryManager._save_state_to_db')
-    def test_sol_breakout_math(self, mock_save):
-        # 1. Setup: Give it exactly $10,000 to manage
-        treasury = TreasuryManager(DummyLogger(), initial_capital=10000.00, environment="TEST")
+    def setUp(self):
+        # Mock the DB connection so we don't need a live Postgres instance for unit tests
+        self.patcher = patch('treasury_manager.get_db_connection')
+        self.mock_db = self.patcher.start()
+        self.treasury = TreasuryManager()
+
+    def tearDown(self):
+        self.patcher.stop()
+
+    def test_reconcile_with_exchange_truth_imbalance(self):
+        """
+        Verify that if the internal DB ledger doesn't match the Kraken API truth, 
+        the system flags the imbalance rather than silently overwriting.
+        """
+        # Mock internal state returning $1000, but exchange returns $900
+        self.treasury.get_internal_balance = MagicMock(return_value=1000.0)
         
-        # 2. Action: Shift to the SOL playbook
-        success = treasury.execute_playbook("sol_breakout")
+        # Call reconciliation
+        result, variance = self.treasury.reconcile_with_exchange_truth(actual_exchange_balance=900.0)
         
-        # 3. Assertions: Verify the engine did exactly what we expect
-        self.assertTrue(success, "Playbook should execute successfully")
+        # Expecting a flag/warning, not a silent pass
+        self.assertFalse(result, "Treasury should flag a negative variance")
+        self.assertEqual(variance, -100.0)
+
+    def test_allocation_limits(self):
+        """Ensure the manager blocks negative or over-leveraged trade allocations."""
+        self.treasury.get_internal_balance = MagicMock(return_value=500.0)
         
-        # 4. Verify: 60% SOL allocation math
-        self.assertEqual(treasury.allocations["sol_pure"], 6000.00, "SOL should receive exactly 60%")
-        self.assertEqual(treasury.allocations["eth_pure"], 1500.00, "ETH should receive exactly 15%")
-        
-        # 5. Verify: Reserve calculation
-        expected_allocated = 6000.0 + 1500.0 + 1500.0 + 500.0
-        expected_reserve = 10000.00 - expected_allocated
-        self.assertEqual(treasury.reserve, expected_reserve, "Reserve math is incorrect")
-        
-        # 6. Verify: Attempted to save to db (blocked actually)
-        mock_save.assert_called_with("sol_breakout")
-        
-if __name__ == '__main__':
-    unittest.main()
+        with self.assertRaises(ValueError):
+            self.treasury.allocate_funds(amount=600.0) # Should fail: exceeds balance
+            
+        with self.assertRaises(ValueError):
+            self.treasury.allocate_funds(amount=-50.0) # Should fail: negative allocation

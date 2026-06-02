@@ -1,9 +1,10 @@
 from strategies.base_strategy import BaseStrategy
 
 class SniperStrategy(BaseStrategy):
-    def __init__(self):
-        super().__init__(name="sniper_v1")
+    def __init__(self, tranche_spacing_pct=0.015, max_tranches=3, **kwargs):
+        super().__init__(tranche_spacing_pct=tranche_spacing_pct, max_tranches=max_tranches)
         # Strategy-specific execution thresholds
+        self.name = "sniper_v1"
         self.rsi_oversold = 40.0      # Generates alpha on lower-bound exhaustions
         self.rsi_overbought = 70.0     # Cap limits
         self.max_tranches = 3          # Aligns with your dashboard telemetry config
