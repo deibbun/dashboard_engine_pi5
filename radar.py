@@ -12,7 +12,9 @@ class MarketRadar:
     def __init__(self, logger, max_dynamic_pairs=3):
         self.logger = logger
         self.max_dynamic_pairs = max_dynamic_pairs
-        self.core_pairs = ['BTC/USD', 'ETH/USD', 'SOL/USD']
+        self.core_pairs = ['XBT/USD', 'ETH/USD', 'SOL/USD']
+        
+        self.blacklist = ['USDT/USD', 'USDC/USD', 'DAI/USD', 'T/USD', 'C/USD']
         
         self.db_params = {
             'dbname': os.getenv('DB_NAME'),
@@ -53,7 +55,7 @@ class MarketRadar:
                 clean_ticker = f"{base}/USD"
                 
                 # We only want to discover NEW pairs, skip the core ones
-                if clean_ticker in self.core_pairs: continue
+                if clean_ticker in self.core_pairs or clean_ticker in self.blacklist: continue
                 
                 # Calculate 24h USD Volume
                 vol_24h = float(data['v'][1])

@@ -10,7 +10,7 @@ class TreasuryManager:
         self.reserve = initial_capital
         self.reconciliation_light = "YELLOW"
         self.allocations = {
-            "btc_pure": 0.0,
+            "xbt_pure": 0.0,
             "eth_pure": 0.0,
             "sol_pure": 0.0,
             "master": 0.0
@@ -19,6 +19,42 @@ class TreasuryManager:
         self.history = []
         
         self.execute_playbook("normal_split")
+        
+    def reconcile_with_exchange_truth(self, actual_exchange_balance):
+        """Snaps internal ledger states back to match the exchange truth 
+        when no active strategy allocations are exposed to market risks.
+        """
+        conn = self._get_db_connection()
+        cur = conn.cursor()
+        try:
+            # Verify if any active positions are currently holding live token volumes
+            cur.execute("""
+                SELECT COUNT(*) FROM positions 
+                WHERE environment = %s AND status = 'OPEN' AND qty > 0;
+            """, (self.environment,))
+            active_exposure_count = cur.fetchone()[0]
+
+            # If zero tokens are open, any drift is purely unlogged fee discrepancies or dust
+            if active_exposure_count == 0:
+                drift = round(actual_exchange_balance - self.total_capital, 2)
+                
+                if abs(drift) > 0.01:
+                    self.logger.info(f"Reconciliation Sync: Correcting ledger drift of ${drift:+2f}.")
+                    self.total_capital = actual_exchange_balance
+                    self.reserve = actual_exchange_balance - sum(self.allocations.values())
+                    
+                    # Write a clean record to freeze the state update
+                    cur.execute("""
+                        INSERT INTO treasury_state (environment, play_name, total_capital, reserve, allocations)
+                        VALUES (%s, %s, %s, %s, %s);
+                    """, (self.environment, self.current_play, self.total_capital, self.reserve, json.dumps(self.allocations)))
+                    conn.commit()
+        except Exception as e:
+            conn.rollback()
+            self.logger.error(f"Failed to process treasury reconciliation pulse: {str(e)}")
+        finally:
+            cur.close()
+            conn.close()
         
     def verify_reality(self, kraken_actual_balance):
         """The ultimate safety switch"""
@@ -75,9 +111,9 @@ class TreasuryManager:
         """Re-deals the total capital based on target percentages dynamically."""
         # Static Legacy Playbooks
         plays = {
-            "normal_split": {"btc_pure": 0.166, "master": 0.166, "eth_pure": 0.30, "sol_pure": 0.30},
-            "sol_breakout": {"btc_pure": 0.05, "master": 0.15, "eth_pure": 0.15, "sol_pure": 0.60},
-            "eth_run": {"btc_pure": 0.05, "master": 0.15, "eth_pure": 0.60, "sol_pure": 0.15},
+            "normal_split": {"xbt_pure": 0.166, "master": 0.166, "eth_pure": 0.30, "sol_pure": 0.30},
+            "sol_breakout": {"xbt_pure": 0.05, "master": 0.15, "eth_pure": 0.15, "sol_pure": 0.60},
+            "eth_run": {"xbt_pure": 0.05, "master": 0.15, "eth_pure": 0.60, "sol_pure": 0.15},
             "defensive": {"master": 1.0} # Lock everything in the master reserve
         }
         

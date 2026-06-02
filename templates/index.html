@@ -30,16 +30,20 @@
 <body>
     <div class="header">
         <h2>🚀 Executive Engine</h2>
-        <div class="controls">
-            <span id="balance-display" style="font-size: 1.2em; font-weight: bold; margin-right: 20px;">Balance: $0.00</span>
+        <div class="controls" style="display: flex; align-items: center; justify-content: flex-start; gap: 20px;">
             
-			<select id="play-selector" onchange="changePlay()" style="background: #333; color: #fff; border: 1px solid #555; padding: 5px; border-radius: 3px; font-family: monospace; margin-right: 10px;">
+            <div style="display: flex; flex-direction: column; text-align: left; min-width: 150px;">
+                <span id="equity-display" style="font-size: 1.3em; font-weight: bold; color: #4CAF50;">Equity: $0.00</span>
+                <span id="balance-display" style="font-size: 0.85em; color: #bbb;">Settled: $0.00</span>
+            </div>
+            
+            <select id="play-selector" onchange="changePlay()" style="background: #333; color: #fff; border: 1px solid #555; padding: 5px; border-radius: 3px; font-family: monospace;">
 				<option value="" disabled selected>Select Treasury Play...</option>
-				<option value="dynamic_equal">Auto-Balance (Equal Weight Active Pairs)</option>
-				<option value="normal_split">Normal Split (Balanced)</option>
-				<option value="sol_breakout">SOL Breakout (Heavy SOL)</option>
-				<option value="eth_run">ETH Run (Heavy ETH)</option>
-				<option value="defensive">Defensive (Lockdown)</option>
+					<option value="dynamic_equal">Auto-Balance (Equal Weight Active Pairs)</option>
+					<option value="normal_split">Normal Split (Balanced)</option>
+					<option value="sol_breakout">SOL Breakout (Heavy SOL)</option>
+					<option value="eth_run">ETH Run (Heavy ETH)</option>
+					<option value="defensive">Defensive (Lockdown)</option>
 			</select>
 			
             <button id="mode-toggle" onclick="toggleMode()">Loading Mode...</button>
@@ -226,6 +230,17 @@
                 }
                 
                 const data = json.data;
+				
+				// NEW: Update both the Live Equity and Settled Balance displays
+                const equityEl = document.getElementById('equity-display');
+                equityEl.innerText = 'Equity: ' + formatUSD(data.live_equity);
+                
+                // Change color dynamically if equity is lower than settled balance (meaning you are currently in a drawdown)
+                if (data.live_equity < data.balance) {
+                    equityEl.style.color = '#ff9800'; // Warning Orange
+                } else {
+                    equityEl.style.color = '#4CAF50'; // Profit Green
+                }
 
                 document.getElementById('balance-display').innerText = 'Balance: ' + formatUSD(data.balance);
 

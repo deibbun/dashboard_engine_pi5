@@ -308,7 +308,24 @@ class ExecutiveEngineApp:
                     "reserve": self.treasury.reserve,
                     "allocations": self.treasury.allocations,
                     "reconciliation_light": self.treasury.reconciliation_light
-                }
+                }# --- NEW: Calculate Live Equity ---
+                unrealized_pnl = 0.0
+                for pos in data["positions"]:
+                    if pos['status'] == 'OPEN' and float(pos['qty']) > 0:
+                        # Find the matching live market price
+                        current_price = 0.0
+                        for m in data["market"]:
+                            if m['symbol'] == pos['symbol']:
+                                current_price = float(m['price'])
+                                break
+                        
+                        # (Current Price - Entry Price) * Quantity
+                        qty = float(pos['qty'])
+                        entry = float(pos['average_entry_price'])
+                        unrealized_pnl += (current_price - entry) * qty
+
+                # Live Equity = Settled Treasury Capital + Unrealized PnL
+                data["live_equity"] = data["balance"] + unrealized_pnl
 
                 cur.close()
                 conn.close()
@@ -318,6 +335,10 @@ class ExecutiveEngineApp:
 
     def run(self):
         self.app.run(host='0.0.0.0', port=5000, debug=False)
+        
+        # Inside your app.py telemetry aggregator endpoint:
+        actual_balance = float(data['balance']) # $9938.38 from exchange response
+        treasury_manager.reconcile_with_exchange_truth(actual_balance)
 
 if __name__ == '__main__':
     server = ExecutiveEngineApp()
