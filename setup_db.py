@@ -14,6 +14,12 @@ db_params = {
     'port': '5432'
 }
 
+default_pairs = [
+    ('XBT/USD'), True),
+    ('ETH/USD'), True),
+    ('SOL/USD'), True)
+]
+
 def bootstrap_database():
     print("Booting PostgreSQL Architecture with Strategy Isolation...")
     try:
