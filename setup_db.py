@@ -84,7 +84,7 @@ def bootstrap_database():
                 vol_multiplier NUMERIC DEFAULT 1.0,
                 is_hunting BOOLEAN DEFAULT false,
                 momentum_ignition BOOLEAN DEFAULT false,
-                last_updated TIMESTAMPZ DEFAULT CURRENT_TIMESTAMP,
+                last_updated TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 atr NUMERIC(18,8)
             );
         """)
@@ -117,7 +117,7 @@ def bootstrap_database():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS equity_snapshots (
                 id SERIAL PRIMARY KEY,
-                snapshot_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                snapshot_time TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 strategy_id VARCHAR(50),
                 available_cash_usd NUMERIC,
                 reserved_cash_usd NUMERIC,

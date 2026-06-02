@@ -17,7 +17,7 @@ class ExecutionEngine:
     def __init__(self, logger, environment="PAPER"):
         self.logger = logger
         self.environment = environment
-        self.account = TradeAccountant(environment=self.environment)
+        self.accountant = TradeAccountant(environment=self.environment)
         
         self.db_params = {
             'dbname': os.getenv('DB_NAME'),

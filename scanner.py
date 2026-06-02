@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-import time from logger import BotLogger
+import time
+from logger import BotLogger
 from market_oracle import KrakenOracle
 from execution_engine import ExecutionEngine
 from radar import MarketRadar  # <-- Import the Radar
