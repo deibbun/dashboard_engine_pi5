@@ -11,8 +11,8 @@ class TradeAccountant:
     def __init__(self, environment="PAPER"):
         self.environment = environment
         # Standard Kraken Pro entry tier fees
-        self.maker_fee_pct = 0.0025  # 0.25%
-        self.taker_fee_pct = 0.0040  # 0.40%
+        self.maker_fee = 0.0025  # 0.25%
+        self.taker_fee = 0.0040  # 0.40%
         self.base_slippage_pct = 0.0005 # 0.05% standard slippage on Pi 5 execution
 
     def calculate_order_cost(self, target_price, quantity, is_manual_override=False):
@@ -23,7 +23,7 @@ class TradeAccountant:
         gross_amount = float(target_price) * float(quantity)
         
         # Determine appropriate fee tier
-        fee_rate = self.taker_fee_pct if is_manual_override else self.maker_fee_pct
+        fee_rate = self.taker_fee if is_manual_override else self.maker_fee
         execution_fee = gross_amount * fee_rate
         
         # Apply standard execution slippage model
