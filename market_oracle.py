@@ -50,37 +50,38 @@ class KrakenOracle:
 
     def fetch_active_pairs(self):
         """Pulls the dynamic list of monitored pairs from the database."""
+        cur = None
+        conn = None
+        
         try:
             conn = self._get_db_connection()
             cur = conn.cursor(cursor_factory=RealDictCursor)
             cur.execute("SELECT ticker, kraken_symbol FROM monitored_pairs WHERE is_active = TRUE;")
             pairs = cur.fetchall()
-            cur.close()
-            conn.close()
+            
             return pairs
+            
         except Exception as e:
             self.logger.error("ORACLE", f"Failed to fetch monitored pairs: {e}")
             return []
+        finally:
+            if cur: cur.close()
+            if conn: conn.close()
             
     @chaos_monkey
     def fetch_ohlc_data(self, kraken_symbol, interval=60):
         """Pulls the latest hourly candlestick data from Kraken."""
         url = f"{self.base_url}/OHLC?pair={kraken_symbol}&interval={interval}"
             
-        try:
-            response = requests.get(url)
-            data = response.json()
-                
-            if data['error']:
-                self.logger.error("ORACLE", f"Kraken API Error for {kraken_symbol}: {data['error']}")
-                return None
-                
-            candles = data['result'][kraken_symbol]
-            return candles
-                
-        except Exception as e:
-            self.logger.error("ORACLE", f"Network failure fetching {kraken_symbol}: {e}")
+        response = requests.get(url)
+        data = response.json()
+            
+        if data['error']:
+            self.logger.error("ORACLE", f"Kraken API Error for {kraken_symbol}: {data['error']}")
             return None
+            
+        candles = data['result'][kraken_symbol]
+        return candles
                 
     def calculate_indicators(self, candles, period=14):
         """Calculates indicators strictly on closed candles, but returns live price for the UI."""
@@ -156,6 +157,10 @@ class KrakenOracle:
                 is_hunting = EXCLUDED.is_hunting, 
                 last_updated = CURRENT_TIMESTAMP;
         """
+        
+        cur = None
+        conn = None
+        
         try:
             conn = self._get_db_connection()
             cur = conn.cursor()
@@ -165,19 +170,31 @@ class KrakenOracle:
             conn.close()
         except Exception as e:
             self.logger.error("ORACLE", f"Database update failed for {symbol}: {e}")
+        finally:
+            if cur: cur.close()
+            if conn: conn.close()
 
     def process_pair(self, pair_data):
         """Worker function for concurrent scanning."""
         ticker = pair_data['ticker']
         kraken_symbol = pair_data['kraken_symbol']
         
-        candles = self.fetch_ohlc_data(kraken_symbol, interval=60)
-        if candles:
-            live_price, closed_price, sma, atr_pct, momentum, rsi = self.calculate_indicators(candles, period=14)
-            if live_price and sma:
-                self.update_database(ticker, live_price, closed_price, sma, atr_pct, momentum, rsi)
-                return f"{ticker} success"
-        return f"{ticker} failed"
+        try:
+            candles = self.fetch_ohlc_data(kraken_symbol, interval=60)
+            if candles:
+                live_price, closed_price, sma, atr_pct, momentum, rsi = self.calculate_indicators(candles, period=14)
+                if live_price and sma:
+                    self.update_database(ticker, live_price, closed_price, sma, atr_pct, momentum, rsi)
+                    return f"{ticker} success"
+            return f"{ticker} failed"
+        except requests.exceptions.Timeout as e:
+            # Safely catch the simulated (or real) timeout!
+            self.logger.warning("ORACLE", f"Timeout on {ticker}: {e}")
+            return f"{ticker} failed (Timeout)"
+        except Exception as e:
+            # Catch anything else so the thread pool doesn't silently swallow the crash
+            self.logger.error("ORACLE", f"Execution failure processing {ticker}: {e}")
+            return f"{ticker} failed (Error)"
                 
     def scan_markets(self):
         """Checks all tracked pairs concurrently."""

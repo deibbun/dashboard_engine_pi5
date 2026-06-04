@@ -11,28 +11,28 @@ class TradeAccountant:
     def __init__(self, environment="PAPER"):
         self.environment = environment
         # Standard Kraken Pro entry tier fees
-        self.maker_fee = 0.0025  # 0.25%
-        self.taker_fee = 0.0040  # 0.40%
+        self.maker_fee = float(os.getenv('KRAKEN_MAKER_FEE', 0.0025))
+        self.taker_fee = float(os.getenv('KRAKEN_TAKER_FEE', 0.0040))
         self.base_slippage_pct = 0.0005 # 0.05% standard slippage on Pi 5 execution
 
     def calculate_order_cost(self, target_price, quantity, is_manual_override=False):
-        """
-        Computes the exact total fiat cost (or gross proceeds) of an execution.
-        Forces Taker fees if manually executed via the dashboard panel.
-        """
+        """Computes the exact total fiat cost (or gross proceeds) of an execution. Forces Taker fees if manually executed via the dashboard panel."""
         gross_amount = float(target_price) * float(quantity)
         
         # Determine appropriate fee tier
         fee_rate = self.taker_fee if is_manual_override else self.maker_fee
+        fee_type_str = 'taker' if is_manual_override else 'maker'
         execution_fee = gross_amount * fee_rate
         
         # Apply standard execution slippage model
-        slippage = gross_amount * self.base_slippage_pct if self.environment == "LIVE" else 0.0
+        slippage = gross_amount * self.base_slippage_pct if self.environment == "PAPER" else 0.0
         
         return {
             "gross": round(gross_amount, 2),
             "fee": round(execution_fee, 2),
             "slippage": round(slippage, 2),
+            "total_fee": round(execution_fee + slippage, 2),
+            "fee_type": fee_type_str,
             "net_cost": round(gross_amount + execution_fee + slippage, 2)
         }
 

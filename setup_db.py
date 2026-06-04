@@ -61,7 +61,7 @@ def bootstrap_database():
             );
         """)
         
-        strategies = ['master', 'btc_pure', 'eth_pure', 'sol_pure']
+        strategies = ['master', 'xbt_pure', 'eth_pure', 'sol_pure']
         symbols = ['BTC/USD', "ETH/USD", "SOL/USD"]
         environments = ['PAPER', 'LIVE']
         
@@ -138,7 +138,7 @@ def bootstrap_database():
                 id SERIAL PRIMARY KEY,
                 updated_time TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 environment VARCHAR(10) NOT NULL,
-                strategy_id VARCHAR(20) NOT NULL,
+                strategy_id VARCHAR(50) NOT NULL,
                 log_level VARCHAR(20) NOT NULL,
                 message TEXT NOT NULL
             );
@@ -189,6 +189,20 @@ def bootstrap_database():
                 metrics JSONB,
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
+        """)
+        
+        # 9. System Config
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS system_config (
+                key VARCHAR(50) PRIMARY KEY,
+                value VARCHAR(50) NOT NULL
+);
+        """)
+        
+        cur.execute("""
+            INSERT INTO system_config (key, value)
+            VALUES ('trading_mode', 'PAPER')
+            ON CONFLICT DO NOTHING;
         """)
 
         conn.commit()

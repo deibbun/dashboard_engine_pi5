@@ -116,7 +116,10 @@
     </div>
 
     <script>
-        function formatUSD(num) { return '$' + parseFloat(num).toFixed(2); }
+        function formatUSD(num) { 
+            const val = parseFloat(num);
+            return val < 0 ? '-$' + Math.abs(val).toFixed(2) : '$' + val.toFixed(2); 
+        }
         
         async function toggleMode() {
             const btn = document.getElementById('mode-toggle');
@@ -217,6 +220,14 @@
                     alert("Failed to reach the Executive Engine.");
                 }
             }
+        }
+		
+		// Log Level Coloring Helper
+        function getLogColor(level) {
+            if (level === 'ERROR') return '#f44336';   // Red for critical crashes
+            if (level === 'SUCCESS') return '#4CAF50'; // Green for winning trades/fills
+            if (level === 'WARNING') return '#ff9800'; // Orange for API delays/chaos
+            return '#bbb';                             // Grey for standard INFO
         }
 
         async function fetchData() {
@@ -332,6 +343,14 @@
 
                 // Treasury Panel
                 if (data.treasury) {
+                    // FIXED (Desync): Keep the dropdown synced with the engine's true state
+                    if (data.treasury.play_name) {
+                        const selector = document.getElementById('play-selector');
+                        if (selector.value !== data.treasury.play_name) {
+                            selector.value = data.treasury.play_name;
+                        }
+                    }
+
                     const total = parseFloat(data.treasury.total_capital);
                     const reserve = parseFloat(data.treasury.reserve);
                     let lightColor = '#ff9800';
@@ -356,11 +375,19 @@
                     }
                     document.querySelector('#treasury-table tbody').innerHTML = treasuryHtml;
                 }
+				
+				// FIXED: Log Level Coloring Helper
+                function getLogColor(level) {
+                    if (level === 'ERROR') return '#f44336';   // Red
+                    if (level === 'SUCCESS') return '#4CAF50'; // Green
+                    if (level === 'WARNING') return '#ff9800'; // Orange
+                    return '#bbb'; // Info/Default Grey
+                }
 
                 // Journals
-                document.querySelector('#journals-table tbody').innerHTML = data.journals.map(row => 
+                document.querySelector('#journals-table tbody').innerHTML = data.journals.map(row =>
                     `<tr><td>${row.updated_time}</td><td>${row.strategy_id}</td>
-                    <td style="color: ${row.log_level === 'WARNING' ? '#ff9800' : '#bbb'}">${row.log_level}</td>
+                    <td style="color: ${getLogColor(row.log_level)}; font-weight: bold;">${row.log_level}</td>
                     <td>${row.message}</td></tr>`
                 ).join('');
 

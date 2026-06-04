@@ -79,39 +79,60 @@ class MarketRadar:
 
     def _update_database(self, top_picks):
         """Updates the monitored_pairs table and prunes dead assets."""
+        conn = None
+        cur = None
         try:
             conn = self._get_db_connection()
             cur = conn.cursor()
-            
+
             # Step 1: Deactivate everything except our Core Permanent pairs
             cur.execute("""
-                UPDATE monitored_pairs 
-                SET is_active = FALSE 
+                UPDATE monitored_pairs
+                SET is_active = FALSE
                 WHERE ticker NOT IN %s;
             """, (tuple(self.core_pairs),))
-            
+
             # Step 2: Insert or Reactivate the top moving pairs
             for pick in top_picks:
                 cur.execute("""
                     INSERT INTO monitored_pairs (ticker, kraken_symbol, is_active)
                     VALUES (%s, %s, TRUE)
-                    ON CONFLICT (ticker) DO UPDATE 
+                    ON CONFLICT (ticker) DO UPDATE
                     SET is_active = TRUE;
                 """, (pick['ticker'], pick['kraken_symbol']))
-                
+
                 self.logger.success("RADAR", f"Tracking Activated: {pick['ticker']} (${pick['usd_vol']:,.0f} 24h Vol)")
 
-            conn.commit()
-            cur.close()
-            conn.close()
+            # --- THE FIX: Fetch current capital safely ---
+            # Step 3: Query the treasury_state table for the active environment
+            cur.execute("""
+                SELECT total_capital 
+                FROM treasury_state 
+                WHERE environment = %s 
+                ORDER BY updated_time DESC 
+                LIMIT 1;
+            """, (self.logger.environment,))
             
+            t_row = cur.fetchone()
+            # Safely parse the value, falling back to a default if the table is completely empty
+            current_capital = float(t_row[0]) if t_row else 10000.0
+
+            conn.commit()
+
             # Trigger the Treasury to redistribute funds immediately!
             from treasury_manager import TreasuryManager
-            treasury = TreasuryManager(self.logger, environment=self.logger.environment)
-            treasury.execute_playbook("dynamic_equal")
             
+            # --- THE FIX: Pass the fetched capital into the initialization ---
+            treasury = TreasuryManager(self.logger, initial_capital=current_capital, environment=self.logger.environment)
+            treasury.execute_playbook("dynamic_equal")
+
         except Exception as e:
             self.logger.error("RADAR", f"Database update failed: {e}")
+            
+        finally:
+            # Guaranteed connection teardown to prevent Postgres connection leaks
+            if cur: cur.close()
+            if conn: conn.close()
 
 if __name__ == "__main__":
     from logger import BotLogger

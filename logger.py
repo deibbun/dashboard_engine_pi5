@@ -32,17 +32,23 @@ class BotLogger:
             INSERT INTO bot_journals (updated_time, environment, strategy_id, log_level, message)
             VALUES (CURRENT_TIMESTAMP, %s, %s, %s, %s);
         """
+        cur = None
+        conn = None
+        
         try:
             conn = self._get_connection()
             cur = conn.cursor()
             cur.execute(sql, (self.environment, strategy_id, log_level, message))
             conn.commit()
-            cur.close()
-            conn.close()
+            
             # Still printing to standard output so systemd can capture it if needed
             print(f"[{self.environment}][{log_level}] {strategy_id}: {message}")
+            
         except Exception as e:
             print(f"CRITICAL DB LOGGER ERROR: {e} | Original Message: {message}")
+        finally:
+            if cur: cur.close()
+            if conn: conn.close()
 
     def info(self, strategy_id, message):
         self._write_log(strategy_id, 'INFO', message)

@@ -7,7 +7,7 @@ import json
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from strategies.factory import get_strategy
+from strategies.factory import get_strategy, normalize_strategy_id
 from accountant import TradeAccountant
 
 KRAKEN_TAKER_FEE = float(os.getenv('KRAKEN_TAKER_FEE', 0.0025))
@@ -29,25 +29,63 @@ class ExecutionEngine:
 
     def _get_db_connection(self):
         return psycopg2.connect(**self.db_params)
+        
+    def _get_system_mode(self):
+        """Reads the master environment state from the database."""
+        try:
+            conn = self.get_db_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM system_config WHERE key = 'trading_mode';")
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+            return row[0] if row else 'PAPER'
+        except Exception as e:
+            print(f"Failed to fetch system mode, defaulting to PAPER: {e}")
+            return 'PAPER'
+
+    def _set_system_mode(self, mode_string):
+        """Writes the new environment state to the database."""
+        try:
+            conn = self.get_db_connection()
+            cur = conn.cursor()
+            cur.execute("UPDATE system_config SET value = %s WHERE key = 'trading_mode';", (mode_string,))
+            conn.commit()
+            cur.close()
+            conn.close()
+        except Exception as e:
+            print(f"Failed to update system mode: {e}")
 
     def _get_current_allocations(self):
         sql = "SELECT allocations FROM treasury_state WHERE environment = %s ORDER BY updated_time DESC LIMIT 1;"
+        
+        conn = None
+        cur = None
+        
         try:
             conn = self._get_db_connection()
             cur = conn.cursor(cursor_factory=RealDictCursor)
             cur.execute(sql, (self.environment,))
             row = cur.fetchone()
-            cur.close()
-            conn.close()
             if row and row['allocations']:
                 return json.loads(row['allocations']) if isinstance(row['allocations'], str) else row['allocations']
             return {}
         except:
             return {}
+            
+        finally:
+            # This ensures the connection never hangs open, no matter how the query ends
+            if cur:
+                cur.close()
+            if conn:
+                conn.close()
 
     def process_entries(self):
         """Evaluates initial entries and tranche scale-ins."""
         allocations = self._get_current_allocations()
+        
+        conn = None
+        cur = None
         
         try:
             conn = self._get_db_connection()
@@ -67,7 +105,7 @@ class ExecutionEngine:
                 atr_pct = float(opp['atr_pct']) / 100.0 if opp['atr_pct'] else 0.01
                 
                 base_asset = sym.split('/')[0].lower()
-                strat_id = f"{base_asset}_pure"
+                strat_id = normalize_strategy_id(sym)
                 total_allocated = float(allocations.get(strat_id, allocations.get("master", 0.0)))
                 
                 if total_allocated < 10.0: continue
@@ -86,10 +124,11 @@ class ExecutionEngine:
                         qty = tranche_usd / filled_price
                         
                         # Set wide targets based on ATR
-                        sl = filled_price - (filled_price * (atr_pct * 1.5))
-                        tp1 = filled_price + (filled_price * atr_pct)
-                        tp2 = filled_price + (filled_price * (atr_pct * 2.0))
-                        tp3 = filled_price + (filled_price * (atr_pct * 3.0))
+                        brackets = playbook.calculate_brackets(filled_price, atr_pct)
+                        sl = brackets["sl_price"]
+                        tp1 = brackets["tp1"]
+                        tp2 = brackets["tp2"]
+                        tp3 = brackets["tp3"]
                         
                         insert_sql = """
                             INSERT INTO positions (symbol, strategy_id, environment, status, current_tranche, max_tranches, qty, average_entry_price, entry_price, sl_price, tp1_price, tp2_price, tp3_price, initial_margin_usd, last_updated)
@@ -110,7 +149,7 @@ class ExecutionEngine:
                         # Check if price dropped enough to trigger the next scale-in
                         target_drop_price = avg_entry * (1.0 - playbook.tranche_spacing_pct)
                         
-                        if target_price <= target_drop_price:
+                        if playbook.evaluate_scale_in(target_price, avg_entry, curr_tranche, atr_pct):
                             
                             filled_price = self.accountant.apply_entry_slippage(target_price)
                             
@@ -132,10 +171,15 @@ class ExecutionEngine:
                             conn.commit()
                             self.logger.success(strat_id, f"TRANCHE {curr_tranche + 1} FILLED [{sym}] - New Avg Price: ${new_avg:.2f}")
 
-            cur.close()
-            conn.close()
         except Exception as e:
             self.logger.error("EXECUTION", f"Entry processing failed: {e}")
+            
+        finally:
+            # This ensures the connection never hangs open, no matter how the query ends
+            if cur:
+                cur.close()
+            if conn:
+                conn.close()
 
     def process_exits(self):
         """Handles Stop Losses, Partial Take Profits (TP1/TP2), and Final Exits (TP3)."""
