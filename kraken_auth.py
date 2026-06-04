@@ -58,7 +58,7 @@ class KrakenPrivateClient:
             #return float(balances.get("ZUSD", 0.0))
             clean_balances = {
                 "USD": float(raw_balances.get("ZUSD", 0.0)),
-                "BTC": float(raw_balances.get("XXBT", 0.0)),
+                "XBT": float(raw_balances.get("XXBT", 0.0)),
                 "ETH": float(raw_balances.get("XETH", 0.0)),
                 "SOL": float(raw_balances.get("SOL", 0.0))
             }

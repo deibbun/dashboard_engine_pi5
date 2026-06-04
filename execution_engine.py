@@ -1,3 +1,5 @@
+# execution_engine.py
+
 import os
 from dotenv import load_dotenv
 
@@ -126,9 +128,9 @@ class ExecutionEngine:
                         # Set wide targets based on ATR
                         brackets = playbook.calculate_brackets(filled_price, atr_pct)
                         sl = brackets["sl_price"]
-                        tp1 = brackets["tp1"]
-                        tp2 = brackets["tp2"]
-                        tp3 = brackets["tp3"]
+                        tp1 = brackets["tp1_price"]
+                        tp2 = brackets["tp2_price"]
+                        tp3 = brackets["tp3_price"]
                         
                         insert_sql = """
                             INSERT INTO positions (symbol, strategy_id, environment, status, current_tranche, max_tranches, qty, average_entry_price, entry_price, sl_price, tp1_price, tp2_price, tp3_price, initial_margin_usd, last_updated)
@@ -175,11 +177,8 @@ class ExecutionEngine:
             self.logger.error("EXECUTION", f"Entry processing failed: {e}")
             
         finally:
-            # This ensures the connection never hangs open, no matter how the query ends
-            if cur:
-                cur.close()
-            if conn:
-                conn.close()
+            if cur: cur.close()
+            if conn: conn.close()
 
     def process_exits(self):
         """Handles Stop Losses, Partial Take Profits (TP1/TP2), and Final Exits (TP3)."""
@@ -208,9 +207,9 @@ class ExecutionEngine:
                 margin = float(pos['initial_margin_usd'])
                 
                 sl_price = float(pos['sl_price'])
-                tp1 = float(pos['tp1_price'])
-                tp2 = float(pos['tp2_price'])
-                tp3 = float(pos['tp3_price'])
+                tp1_price = float(pos['tp1_price'])
+                tp2_price = float(pos['tp2_price'])
+                tp3_price = float(pos['tp3_price'])
                 
                 pnl_realized = 0.0
                 action_taken = None
@@ -229,7 +228,7 @@ class ExecutionEngine:
                     action_taken = "STOP LOSS (FULL CLOSE)"
                     
                 # 2. TAKE PROFIT 1 HIT (Sell 33%, Move SL to Break Even)
-                elif tp1 > 0 and current_price >= tp1:
+                elif tp1_price > 0 and current_price >= tp1_price:
                     sell_qty = qty * 0.33
                     margin_reduction = margin * 0.33
                     
@@ -247,7 +246,7 @@ class ExecutionEngine:
                     action_taken = "TP1 HIT (RISK FREE SECURED)"
                     
                 # 3. TAKE PROFIT 2 HIT (Sell another chunk, Trail SL higher)
-                elif tp2 > 0 and current_price >= tp2:
+                elif tp2_price > 0 and current_price >= tp2_price:
                     sell_qty = qty * 0.50
                     margin_reduction = margin * 0.50
                     
@@ -268,7 +267,7 @@ class ExecutionEngine:
                     action_taken = "TP2 HIT (PROFIT TRAILED)"
                     
                 # 4. TAKE PROFIT 3 HIT (Final Liquidation)
-                elif tp3 > 0 and current_price >= tp3:
+                elif tp3_price > 0 and current_price >= tp3_price:
                     financials = self.accountant.calculate_exit(avg_entry, current_price, qty)
                     pnl_realized = financials["net_pnl"]
                     
@@ -309,11 +308,8 @@ class ExecutionEngine:
             self.logger.error("EXECUTION", f"Exit processing failed: {e}")
             
         finally:
-            # This ensures the connection never hangs open, no matter how the query ends
-            if cur:
-                cur.close()
-            if conn:
-                conn.close()
+            if cur: cur.close()
+            if conn: conn.close()
             
     def prune_dead_assets(self):
         """Dynamically removes non-core assets that are inactive and not currently in a trade."""
