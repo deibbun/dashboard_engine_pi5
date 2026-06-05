@@ -68,3 +68,44 @@ class KrakenPrivateClient:
         except Exception as e:
             print(f"Network Error:  fetch live balances: {e}", flush=True)
             return None
+            
+    def place_live_order(self, symbol, side, order_type, volume, price=None):
+        """Executes a live market or limit order on Kraken."""
+        if not self.api_key or not self.api_secret:
+            print("❌ Auth Error: Keys missing.", flush=True)
+            return None
+            
+        endpoint = "/0/private/AddOrder"
+        url = self.api_url + endpoint
+        
+        # Note: Ensure 'symbol' maps to Kraken's expected format (e.g., 'XBTUSD' instead of 'BTC/USD')
+        data = {
+            "nonce": str(int(1000 * time.time())),
+            "ordertype": order_type,  # 'market' or 'limit'
+            "type": side,             # 'buy' or 'sell'
+            "volume": str(volume),
+            "pair": symbol
+        }
+        
+        if order_type == 'limit' and price:
+            data["price"] = str(price)
+            
+        headers = {
+            "API-Key": self.api_key,
+            "API-Sign": self._get_kraken_signature(endpoint, data)
+        }
+        
+        try:
+            response = requests.post(url, headers=headers, data=data)
+            res_json = response.json()
+            
+            if res_json.get("error"):
+                print(f"Kraken API Execution Error: {res_json['error']}", flush=True)
+                return None
+                
+            # Returns the transaction ID on success
+            return res_json.get("result", {}).get("txid", [])[0]
+            
+        except Exception as e:
+            print(f"Network Error placing order: {e}", flush=True)
+            return None

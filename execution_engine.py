@@ -127,20 +127,40 @@ class ExecutionEngine:
                         
                         # Set wide targets based on ATR
                         brackets = playbook.calculate_brackets(filled_price, atr_pct)
+                        
                         sl = brackets["sl_price"]
                         tp1 = brackets["tp1_price"]
                         tp2 = brackets["tp2_price"]
                         tp3 = brackets["tp3_price"]
                         
-                        insert_sql = """
-                            INSERT INTO positions (symbol, strategy_id, environment, status, current_tranche, max_tranches, qty, average_entry_price, entry_price, sl_price, tp1_price, tp2_price, tp3_price, initial_margin_usd, last_updated)
-                            VALUES (%s, %s, %s, 'OPEN', 1, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                            ON CONFLICT (symbol, strategy_id, environment)
-                            DO UPDATE SET status = 'OPEN', current_tranche = 1, max_tranches = EXCLUDED.max_tranches, qty = EXCLUDED.qty, average_entry_price = EXCLUDED.average_entry_price, entry_price = EXCLUDED.entry_price, sl_price = EXCLUDED.sl_price, tp1_price = EXCLUDED.tp1_price, tp2_price = EXCLUDED.tp2_price, tp3_price = EXCLUDED.tp3_price, initial_margin_usd = EXCLUDED.initial_margin_usd, last_updated = CURRENT_TIMESTAMP;
-                        """
-                        cur.execute(insert_sql, (sym, strat_id, self.environment, playbook.max_tranches, qty, filled_price, filled_price, sl, tp1, tp2, tp3, tranche_usd))
-                        conn.commit()
-                        self.logger.success(strat_id, f"TRANCHE 1 FILLED [{sym}] - Avg Price: ${filled_price:.2f} (Target was ${target_price:.2f})")
+                        # --- The Live Bridge ---
+                        trade_approved = True
+                        if self.environment == "LIVE":
+                            
+                            # Translate standard ticker to Kraken format if necessary
+                            kraken_pair = sym.replace("/", "").replace("BTC", "XBT")
+                            
+                            txid = self.kraken_client.place_live_order(
+                                symbol=kraken_pair,
+                                side='buy',
+                                order_type='market', # or 'limit' if placing post-only maker orders
+                                volume=qty
+                            )
+                            
+                            if not txid:
+                                trade_approved = False
+                                self.logger.error(strat_id, f"LIVE EXECUTION FAILED on {strat_id}, DB insert aborted.")
+                                
+                        if trade_approved:
+                            insert_sql = """
+                                INSERT INTO positions (symbol, strategy_id, environment, status, current_tranche, max_tranches, qty, average_entry_price, entry_price, sl_price, tp1_price, tp2_price, tp3_price, initial_margin_usd, last_updated)
+                                VALUES (%s, %s, %s, 'OPEN', 1, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                                ON CONFLICT (symbol, strategy_id, environment)
+                                DO UPDATE SET status = 'OPEN', current_tranche = 1, max_tranches = EXCLUDED.max_tranches, qty = EXCLUDED.qty, average_entry_price = EXCLUDED.average_entry_price, entry_price = EXCLUDED.entry_price, sl_price = EXCLUDED.sl_price, tp1_price = EXCLUDED.tp1_price, tp2_price = EXCLUDED.tp2_price, tp3_price = EXCLUDED.tp3_price, initial_margin_usd = EXCLUDED.initial_margin_usd, last_updated = CURRENT_TIMESTAMP;
+                            """
+                            cur.execute(insert_sql, (sym, strat_id, self.environment, playbook.max_tranches, qty, filled_price, filled_price, sl, tp1, tp2, tp3, tranche_usd))
+                            conn.commit()
+                            self.logger.success(strat_id, f"TRANCHE 1 FILLED [{sym}] - Avg Price: ${filled_price:.2f} (Target was ${target_price:.2f})")
 
                 # --- SCENARIO 2: SCALING IN (Tranches 2+) ---
                 else:
@@ -213,96 +233,118 @@ class ExecutionEngine:
                 
                 pnl_realized = 0.0
                 action_taken = None
+                sell_qty = 0.0
                 
                 # 1. HARD STOP LOSS (Liquidate Everything)
                 if current_price <= sl_price:
-                    financials = self.accountant.calculate_exit(avg_entry, current_price, qty)
-                    pnl_realized = financials["net_pnl"]
+                    sell_qty = qty
+                    action_taken = "STOP LOSS (FULL CLOSE)"
                     
-                    cur.execute("""
+                    # Define the SQL
+                    db_update_sql = """
                         UPDATE positions 
                         SET status = 'WAITING', current_tranche = 0, qty = 0, average_entry_price = 0, entry_price = 0, 
                             sl_price = 0, tp1_price = 0, tp2_price = 0, tp3_price = 0, initial_margin_usd = 0, last_updated = CURRENT_TIMESTAMP
                         WHERE strategy_id = %s AND symbol = %s AND environment = %s;
-                    """, (strat, sym, self.environment))
-                    action_taken = "STOP LOSS (FULL CLOSE)"
+                    """
+                    db_update_params = (strat, sym, self.environment)
                     
                 # 2. TAKE PROFIT 1 HIT (Sell 33%, Move SL to Break Even)
                 elif tp1_price > 0 and current_price >= tp1_price:
                     sell_qty = qty * 0.33
                     margin_reduction = margin * 0.33
                     
-                    financials = self.accountant.calculate_exit(avg_entry, current_price, sell_qty)
-                    pnl_realized = financials["net_pnl"]
-                    
                     new_qty = qty - sell_qty
                     new_margin = margin - margin_reduction
+                    action_taken = "TP1 HIT (RISK FREE SECURED)"
                     
-                    cur.execute("""
+                    db_update_sql = """
                         UPDATE positions 
                         SET qty = %s, initial_margin_usd = %s, tp1_price = 0, sl_price = %s, last_updated = CURRENT_TIMESTAMP
                         WHERE strategy_id = %s AND symbol = %s AND environment = %s;
-                    """, (new_qty, new_margin, avg_entry, strat, sym, self.environment))
-                    action_taken = "TP1 HIT (RISK FREE SECURED)"
+                    """
+                    db_update_params = (new_qty, new_margin, avg_entry, strat, sym, self.environment)
                     
                 # 3. TAKE PROFIT 2 HIT (Sell another chunk, Trail SL higher)
                 elif tp2_price > 0 and current_price >= tp2_price:
                     sell_qty = qty * 0.50
                     margin_reduction = margin * 0.50
                     
-                    financials = self.accountant.calculate_exit(avg_entry, current_price, sell_qty)
-                    pnl_realized = financials["net_pnl"]
-                    
                     new_qty = qty - sell_qty
                     new_margin = margin - margin_reduction
+                    action_taken = "TP2 HIT (PROFIT TRAILED)"
                     
                     # Trail stop loss to halfway between entry and TP2 to ensure profit lock
                     trailed_sl = avg_entry + ((current_price - avg_entry) * 0.5)
                     
-                    cur.execute("""
+                    db_update_sql = """
                         UPDATE positions 
                         SET qty = %s, initial_margin_usd = %s, tp2_price = 0, sl_price = %s, last_updated = CURRENT_TIMESTAMP
                         WHERE strategy_id = %s AND symbol = %s AND environment = %s;
-                    """, (new_qty, new_margin, trailed_sl, strat, sym, self.environment))
-                    action_taken = "TP2 HIT (PROFIT TRAILED)"
+                    """
+                    db_update_params = (new_qty, new_margin, trailed_sl, strat, sym, self.environment)
                     
                 # 4. TAKE PROFIT 3 HIT (Final Liquidation)
                 elif tp3_price > 0 and current_price >= tp3_price:
-                    financials = self.accountant.calculate_exit(avg_entry, current_price, qty)
-                    pnl_realized = financials["net_pnl"]
+                    sell_qty = qty
+                    action_taken = "TP3 HIT (FULL TARGET REACHED)"
                     
-                    cur.execute("""
+                    db_update_sql = """
                         UPDATE positions 
                         SET status = 'WAITING', current_tranche = 0, qty = 0, average_entry_price = 0, entry_price = 0, 
                             sl_price = 0, tp1_price = 0, tp2_price = 0, tp3_price = 0, initial_margin_usd = 0, last_updated = CURRENT_TIMESTAMP
                         WHERE strategy_id = %s AND symbol = %s AND environment = %s;
-                    """, (strat, sym, self.environment))
-                    action_taken = "TP3 HIT (FULL TARGET REACHED)"
+                    """
+                    db_update_params = (strat, sym, self.environment)
                 
-                # Apply PnL to Treasury if action was taken
+                # --- The Live Bridge ---
                 if action_taken:
-                    conn.commit()
-                    cur.execute("SELECT total_capital, reserve, allocations, play_name FROM treasury_state WHERE environment = %s ORDER BY updated_time DESC LIMIT 1;", (self.environment,))
-                    t_state = cur.fetchone()
+                    trade_approved = True
                     
-                    if t_state:
-                        import json
-                        new_capital = round(float(t_state['total_capital']) + pnl_realized, 2)
-                        new_reserve = round(float(t_state['reserve']) + pnl_realized, 2)
-                        allocs = t_state['allocations'] if isinstance(t_state['allocations'], str) else json.dumps(t_state['allocations'])
+                    if self.environment == "LIVE":
+                        kraken_pair = sym.replace("/", "").replace("BTC", "XBT")
                         
-                        cur.execute("""
-                            INSERT INTO treasury_state (environment, play_name, total_capital, reserve, allocations)
-                            VALUES (%s, %s, %s, %s, %s);
-                        """, (self.environment, t_state['play_name'], new_capital, new_reserve, allocs))
+                        # Use the specific sell_qty determined by the if/elif blocks above
+                        txid = self.kraken_client.place_live_order(
+                            symbol=kraken_pair,
+                            side='sell',
+                            order_type='market'
+                            volume=sell_qty
+                        )
+                        
+                        if not txid:
+                            trade_approve = False
+                            self.logger.error(strat, f"LIVE EXIT FAILED on {sym}.  DB update aborted.")
+                            
+                    if trade_approved:
+                        # 1. Execute the position update
+                        cur.execute(db_update_sql, db_update_params)
+                        
+                        # 2. Calculate final financials based on successful execution
+                        financials = self.accountant.calculate_exit(avg_entry, current_price, sell_qty)
+                        pnl_realized = financials["net_pnl"]
                         conn.commit()
+                        cur.execute("SELECT total_capital, reserve, allocations, play_name FROM treasury_state WHERE environment = %s ORDER BY updated_time DESC LIMIT 1;", (self.environment,))
+                        t_state = cur.fetchone()
                         
-                    log_type = "SUCCESS" if pnl_realized > 0 else "WARNING"
-                    self.logger.info(
-                        strat, 
-                        f"{action_taken} [{sym}] @ ${current_price:.2f} | "
-                        f"Gross: ${financials['gross_pnl']:.2f} | Net PnL: ${pnl_realized:.2f}"
-                    )
+                        if t_state:
+                            import json
+                            new_capital = round(float(t_state['total_capital']) + pnl_realized, 2)
+                            new_reserve = round(float(t_state['reserve']) + pnl_realized, 2)
+                            allocs = t_state['allocations'] if isinstance(t_state['allocations'], str) else json.dumps(t_state['allocations'])
+                            
+                            cur.execute("""
+                                INSERT INTO treasury_state (environment, play_name, total_capital, reserve, allocations)
+                                VALUES (%s, %s, %s, %s, %s);
+                            """, (self.environment, t_state['play_name'], new_capital, new_reserve, allocs))
+                            conn.commit()
+                            
+                        log_type = "SUCCESS" if pnl_realized > 0 else "WARNING"
+                        self.logger.info(
+                            strat, 
+                            f"{action_taken} [{sym}] @ ${current_price:.2f} | "
+                            f"Gross: ${financials['gross_pnl']:.2f} | Net PnL: ${pnl_realized:.2f}"
+                        )
 
         except Exception as e:
             self.logger.error("EXECUTION", f"Exit processing failed: {e}")
