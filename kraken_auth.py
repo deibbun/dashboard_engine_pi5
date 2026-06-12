@@ -109,3 +109,14 @@ class KrakenPrivateClient:
         except Exception as e:
             print(f"Network Error placing order: {e}", flush=True)
             return None
+            
+    def get_min_volume(self, symbol):
+        """Fetches the minimum trade volume for a pair from Kraken Public API."""
+        try:
+            # Kraken's public API to get pair info
+            url = f"https://api.kraken.com/0/public/AssetPairs?pair={symbol}"
+            res = requests.get(url).json()
+            # Kraken returns the min volume in 'ordermin'
+            return float(res['result'][symbol]['ordermin'])
+        except:
+            return 10.0 # Default fallback to a safe $10.00

@@ -161,11 +161,16 @@ class TreasuryManager:
         allocated_total = 0.0
         self.allocations = {} 
 
+        import math
+        allocated_total = 0.0
+        self.allocations = {}
+
         for bot, weight in weights.items():
-            amount = round(self.total_capital * weight, 2)
+            # Floor to 2 decimals instead of rounding up to prevent phantom overdrafts
+            amount = math.floor(self.total_capital * weight * 100) / 100.0
             self.allocations[bot] = amount
             allocated_total += amount
 
         self.reserve = round(self.total_capital - allocated_total, 2)
         self._save_state_to_db(play_name)
-        return True # Added explicit True return for success
+        return True

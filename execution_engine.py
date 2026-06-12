@@ -11,6 +11,7 @@ from psycopg2.extras import RealDictCursor
 
 from strategies.factory import get_strategy, normalize_strategy_id
 from accountant import TradeAccountant
+from kraken_auth import KrakenPrivateClient
 
 KRAKEN_TAKER_FEE = float(os.getenv('KRAKEN_TAKER_FEE', 0.0025))
 KRAKEN_MAKER_FEE = float(os.getenv('KRAKEN_MAKER_FEE', 0.0040))
@@ -20,6 +21,7 @@ class ExecutionEngine:
         self.logger = logger
         self.environment = environment
         self.accountant = TradeAccountant(environment=self.environment)
+        self.kraken_client = KrakenPrivateClient() if self.environment == "LIVE" else None
         
         self.db_params = {
             'dbname': os.getenv('DB_NAME'),
@@ -140,7 +142,14 @@ class ExecutionEngine:
                             # Translate standard ticker to Kraken format if necessary
                             kraken_pair = sym.replace("/", "").replace("BTC", "XBT")
                             
-                            txid = self.kraken_client.place_live_order(
+                            min_vol = self.kraken_client.get_min_volume(kraken_pair)
+                            
+                            if (qty * filled_price) < min_vol:
+                                self.logger.error(strat_id, f"ABORT:  Order value ${qty*filled_price:.2f} below min ${min_vol}")
+                                trade_approved = False
+                                
+                            else:
+                                txid = self.kraken_client.place_live_order(
                                 symbol=kraken_pair,
                                 side='buy',
                                 order_type='market', # or 'limit' if placing post-only maker orders
@@ -308,12 +317,12 @@ class ExecutionEngine:
                         txid = self.kraken_client.place_live_order(
                             symbol=kraken_pair,
                             side='sell',
-                            order_type='market'
+                            order_type='market',
                             volume=sell_qty
                         )
                         
                         if not txid:
-                            trade_approve = False
+                            trade_approved = False
                             self.logger.error(strat, f"LIVE EXIT FAILED on {sym}.  DB update aborted.")
                             
                     if trade_approved:

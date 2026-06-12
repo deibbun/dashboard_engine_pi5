@@ -12,6 +12,7 @@ from logger import BotLogger
 from market_oracle import KrakenOracle
 from execution_engine import ExecutionEngine
 from radar import MarketRadar
+from kraken_auth import KrakenPrivateClient
 
 def get_active_environment():
     """Checks the system_config table to see if the UI switched us to LIVE or PAPER."""
@@ -58,6 +59,12 @@ def main():
                 db_log.environment = active_env
                 trader.environment = active_env
                 trader.accountant.environment = active_env
+                
+                if active_env == "LIVE":
+                    trader.kraken_client = KrakenPrivateClient()
+                else:
+                    trader.kraken_client = None
+                
                 db_log.info("SYSTEM", f"🔄 Scanner detected environment shift to {active_env.upper()}")
 
             # 1. Run the Radar (Every 240 loops ~ 1 hour)

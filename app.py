@@ -16,6 +16,13 @@ from treasury_manager import TreasuryManager
 from execution_engine import ExecutionEngine
 from strategies.factory import get_strategy, normalize_strategy_id
 
+# 1. Get the absolute path to the directory where this script lives
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 2. Append the certificate and key filenames (ensure spelling matches exactly)
+CERT_PATH = os.path.join(BASE_DIR, 'bot_cert.pem')
+KEY_PATH = os.path.join(BASE_DIR, 'bot_key.pem')
+
 class ExecutiveEngineApp:
     def __init__(self):
         self.app = Flask(__name__)
@@ -175,6 +182,20 @@ class ExecutiveEngineApp:
 
                     # 2. Calculate the exact math of the early exit
                     pnl = (current_price - entry_price) * qty
+                    
+                    # --- Live Bridge ---
+                    if env_str == "LIVE":
+                        kraken_client = KrakenPrivateClient()
+                        kraken_pair = sym.replace("/", "").replace("BTC", "XBT")
+                        txid = kraken_client.place_live_order(
+                            symbol=kraken_pair,
+                            side='sell',
+                            order_type='market',
+                            volume=qty
+                        )
+                        
+                        if not txid:
+                            return jsonify({"status": "error", "message":  "Kraken API rejected the LIVE override exit."})
 
                     # 3. Liquidate the position
                     cur.execute("""
@@ -257,6 +278,19 @@ class ExecutiveEngineApp:
                 tp1 = brackets["tp1_price"]
                 tp2 = brackets["tp2_price"]
                 tp3 = brackets["tp3_price"]
+                
+                if env_str == "LIVE":
+                    kraken_client = KrakenPrivateClient()
+                    kraken_pair = sym.replace("/", "").replace("BTC", "XBT")
+                    txid = kraken_client.place_live_order(
+                        symbol=kraken_pair,
+                        side='buy',
+                        order_type='market',
+                        volume=qty
+                    )
+                    
+                    if not txid:
+                        return jsonify({"status": "error", "message": "Kraken API rejected the LIVE override entry."})
 
                 cur.execute("""
                     INSERT INTO positions (symbol, strategy_id, environment, status, current_tranche, max_tranches, qty, average_entry_price, entry_price, sl_price, tp1_price, tp2_price, tp3_price, initial_margin_usd, last_updated)
@@ -334,13 +368,27 @@ class ExecutiveEngineApp:
                 data["journals"] = journals
 
                 # --- Inject CFO Treasury State to UI ---
-                data["treasury"] = {
-                    "play_name": self.treasury.current_play, # <-- FIXED UI DESYNC
-                    "total_capital": self.treasury.total_capital,
-                    "reserve": self.treasury.reserve,
-                    "allocations": self.treasury.allocations,
-                    "reconciliation_light": self.treasury.reconciliation_light
-                }
+                cur.execute("SELECT play_name, total_capital, reserve, allocations FROM treasury_state WHERE environment = %s ORDER BY updated_time DESC LIMIT 1;", (env_str,))
+                t_row = cur.fetchone()
+                
+                if t_row:
+                    allocs = json.loads(t_row['allocations']) if isinstance(t_row['allocations'], str) else t_row['allocations']
+                    data["treasury"] = {
+                        "play_name": t_row['play_name'],
+                        "total_capital": float(t_row['total_capital']),
+                        "reserve": float(t_row['reserve']),
+                        "allocations": allocs,
+                        "reconciliation_light": self.treasury.reconciliation_light # The safety light stays in memory
+                    }
+                else:
+                    # Fallback if DB is empty
+                    data["treasury"] = {
+                        "play_name": "unknown",
+                        "total_capital": 0.0,
+                        "reserve": 0.0,
+                        "allocations": {},
+                        "reconciliation_light": "RED"
+                    }
                 
                 # --- NEW: Calculate Live Equity ---
                 unrealized_pnl = 0.0
@@ -369,7 +417,7 @@ class ExecutiveEngineApp:
 
     def run(self):
         # Clean blocking loop. Starts the server.
-        self.app.run(host='0.0.0.0', port=5000, debug=False)
+        self.app.run(host='0.0.0.0', port=443, debug=False, ssl_context=(CERT_PATH, KEY_PATH))
 
 if __name__ == '__main__':
     server = ExecutiveEngineApp()
