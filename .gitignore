@@ -1,16 +1,6 @@
-# Security
-.env
-
-# Virtual Environments
 venv/
-env/
-
-# Python Cache
 __pycache__/
-*.pyc
-
-# Database (if you ever use local SQLite files)
-*.db
-market_oracle_v2.py
-crypto.txt
-local_logs.txt
+*.pem
+*.txt
+.env
+.config/
